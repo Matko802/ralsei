@@ -92,6 +92,7 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 	meName := a.botName()
 	log.Printf("logged in as %s (%s)", e.User.String(), meName)
 	go a.loadAvatar(e.User)
+	go a.warmModel()
 
 	cmds := []*discordgo.ApplicationCommand{
 		{
@@ -547,7 +548,14 @@ func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo
 		go a.liveEdit(s, channelID, msg.ID, live, stop)
 	}
 
-	reply, err := a.eng.AskStream(historyKey, speaker, prompt, live.set)
+	logged := false
+	reply, err := a.eng.AskStream(historyKey, speaker, prompt, func(t string) {
+		if !logged && strings.TrimSpace(t) != "" {
+			logged = true
+			log.Printf("ai first delta")
+		}
+		live.set(t)
+	})
 	close(stop)
 	if err != nil {
 		log.Printf("ai: %v", err)
@@ -739,6 +747,7 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		cfg.AIModel = model
 		a.mu.Unlock()
 		a.applyAIConfig()
+		go a.warmModel()
 		a.persist()
 		respond(s, i, "AI model set to "+model+".")
 	default:
@@ -813,6 +822,7 @@ func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
 		a.cfg.AIModel = name
 		a.mu.Unlock()
 		a.applyAIConfig()
+		go a.warmModel()
 		a.persist()
 		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI model set to "+name+".", m.Reference())
 	default:
@@ -826,6 +836,7 @@ func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
 			a.cfg.AIModel = name
 			a.mu.Unlock()
 			a.applyAIConfig()
+			go a.warmModel()
 			a.persist()
 			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI model set to "+name+".", m.Reference())
 			return
@@ -985,6 +996,14 @@ func (a *App) handlePrefixChance(s *discordgo.Session, m *discordgo.MessageCreat
 	}
 	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/chance"):])
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setChance(value), m.Reference())
+}
+
+func (a *App) warmModel() {
+	if err := a.eng.Warm(); err != nil {
+		log.Printf("warm: %v", err)
+		return
+	}
+	log.Printf("model warm")
 }
 
 func (a *App) loadAvatar(u *discordgo.User) {

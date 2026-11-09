@@ -324,6 +324,21 @@ func (e *Engine) AskStream(channel uint64, speaker, prompt string, onDelta func(
 	return reply, nil
 }
 
+func (e *Engine) Warm() error {
+	cfg := e.snapshotConfig()
+	body, err := buildChatBody(cfg.Model, "", nil, "", "hi", cfg.Temperature, false, false)
+	if err != nil {
+		return err
+	}
+	resp, err := e.post(strings.TrimRight(cfg.Host, "/"), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
 type Status struct {
 	Running bool
 	Models  []string
