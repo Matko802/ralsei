@@ -58,6 +58,8 @@ func main() {
 	dg.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsGuildMessageTyping |
+		discordgo.IntentsDirectMessages |
+		discordgo.IntentsDirectMessageTyping |
 		discordgo.IntentsMessageContent)
 
 	app.dg = dg
@@ -208,6 +210,7 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	trimmed := strings.TrimSpace(lower)
 
 	isAsk := trimmed == "/ask" || strings.HasPrefix(trimmed, "/ask ")
+	isDM := m.GuildID == ""
 	mentioned := strings.Contains(content, "<@"+id+">") ||
 		strings.Contains(content, "<@!"+id+">") ||
 		(name != "" && strings.Contains(lower, name))
@@ -220,7 +223,7 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if prompt == "" {
 			prompt = "hello"
 		}
-	case repliedToBot || mentioned:
+	case repliedToBot || mentioned || isDM:
 		prompt = stripName(stripIDTag(content, id), name)
 		if strings.TrimSpace(prompt) == "" {
 			prompt = "hello"
@@ -237,7 +240,7 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if !enabled(cfg) {
-		if isAsk || mentioned || repliedToBot {
+		if isAsk || mentioned || repliedToBot || isDM {
 			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI is off — the owner runs /ai on to enable me.", m.Reference())
 		}
 		return
