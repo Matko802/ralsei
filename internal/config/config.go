@@ -119,7 +119,7 @@ func Load(path string) (*Config, error) {
 		cfg.BotName = "Ralsei"
 	}
 	if cfg.AIModel == "" {
-		cfg.AIModel = "phi4-mini"
+		cfg.AIModel = "llama3.2:3b"
 	}
 	if cfg.OllamaHost == "" {
 		cfg.OllamaHost = "http://127.0.0.1:11434"
