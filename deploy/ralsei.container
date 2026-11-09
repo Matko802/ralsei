@@ -7,6 +7,7 @@ ContainerName=ralsei
 Network=host
 Environment=RALSEI_CONFIG=/config/config.jsonc
 Volume=%h/.config/ralsei:/config
+Volume=/run/libvirt/libvirt-sock:/run/libvirt/libvirt-sock
 UserNS=keep-id
 Pull=never
 

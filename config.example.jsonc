@@ -19,5 +19,8 @@
   "event_chance": 0.02,
   "tts_enabled": false,
   "tts_binary": "/opt/piper/piper",
-  "tts_voice": "/opt/piper/voice.onnx"
+  "tts_voice": "/opt/piper/voice.onnx",
+  "vm_name": "artix",
+  "vm_uri": "qemu:///system",
+  "terminal_font": "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 }

@@ -339,6 +339,16 @@ func (e *Engine) Warm() error {
 	return nil
 }
 
+func (e *Engine) Complete(system, prompt string, temperature float64) (string, error) {
+	cfg := e.snapshotConfig()
+	url := strings.TrimRight(cfg.Host, "/")
+	raw, err := e.call(url, cfg.Model, system, nil, "", prompt, temperature, false)
+	if err != nil {
+		return "", err
+	}
+	return sanitizeReply(raw), nil
+}
+
 type Status struct {
 	Running bool
 	Models  []string

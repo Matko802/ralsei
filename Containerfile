@@ -12,7 +12,7 @@ RUN curl -fsSL https://github.com/rhasspy/piper/releases/download/2023.11.14-2/p
 RUN curl -fsSL -o /opt/piper/voice.onnx https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx && curl -fsSL -o /opt/piper/voice.onnx.json https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libopus0 libopusfile0 ca-certificates libstdc++6 libgomp1 && rm -rf /var/lib/apt/lists/* && addgroup --gid 1000 ralsei && adduser --uid 1000 --gid 1000 --disabled-password --gecos "" ralsei
+RUN apt-get update && apt-get install -y --no-install-recommends libopus0 libopusfile0 ca-certificates libstdc++6 libgomp1 libvirt-clients fonts-dejavu-core && rm -rf /var/lib/apt/lists/* && addgroup --gid 1000 ralsei && adduser --uid 1000 --gid 1000 --disabled-password --gecos "" ralsei
 COPY --from=tts /opt/piper /opt/piper
 COPY --from=build /out/ralsei /usr/local/bin/ralsei
 COPY fonts /usr/local/share/ralsei
