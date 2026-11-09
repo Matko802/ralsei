@@ -292,6 +292,19 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "act",
+			Description: "ACT on Ralsei",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -428,6 +441,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	if lowerRaw == "/event" || strings.HasPrefix(lowerRaw, "/event ") {
 		a.handlePrefixEvent(s, m)
+		return
+	}
+	if lowerRaw == "/act" || strings.HasPrefix(lowerRaw, "/act ") {
+		a.handleActCommand(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -649,25 +666,108 @@ func (a *App) triggerEvent(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
+type actAction struct {
+	Label string
+	Style string
+	Text  string
+}
+
+func actActions() []actAction {
+	return []actAction{
+		{Label: "Compliment", Style: "success", Text: "You tell Ralsei he is doing great. He looks away, ears pink. That... means a lot, thank you."},
+		{Label: "Hug", Style: "primary", Text: "You hug Ralsei. He goes very still, then hugs back. Oh! Okay. This is nice."},
+		{Label: "Flirt", Style: "danger", Text: "You flirt with Ralsei. He turns bright red and hides behind his scarf. I, um. I do not know what to say to that!"},
+		{Label: "Check", Style: "secondary", Text: "RALSEI - ATK 3 DEF 3. A gentle prince who believes in you. His scarf is very soft."},
+	}
+}
+
+func (a *App) actComponents() []discordgo.MessageComponent {
+	actions := actActions()
+	row := make([]discordgo.MessageComponent, 0, len(actions))
+	for i, act := range actions {
+		row = append(row, discordgo.Button{
+			Label:    act.Label,
+			Style:    buttonStyle(act.Style),
+			CustomID: fmt.Sprintf("act:%d", i),
+		})
+	}
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: row}}
+}
+
+func (a *App) sendAct(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) {
+	msg := &discordgo.MessageSend{
+		Components: a.actComponents(),
+		Reference:  ref,
+	}
+	cfg := a.snapshot()
+	if cfg.Gamebox && a.gb != nil {
+		if img, err := a.gb.Render("ACT\nRalsei waits for your move."); err == nil {
+			msg.Files = []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}}
+		}
+	}
+	if len(msg.Files) == 0 {
+		msg.Content = "**ACT**\nRalsei waits for your move."
+	}
+	if _, err := s.ChannelMessageSendComplex(channelID, msg); err != nil {
+		log.Printf("act send: %v", err)
+	}
+}
+
+func (a *App) handleActCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
+	a.sendAct(s, m.ChannelID, m.Reference())
+}
+
+func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:    "**ACT**\nRalsei waits for your move.",
+			Components: a.actComponents(),
+		},
+	})
+	if err != nil {
+		log.Printf("act respond: %v", err)
+	}
+}
+
 func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	parts := strings.Split(i.MessageComponentData().CustomID, ":")
-	if len(parts) != 3 || parts[0] != "evt" {
+	if len(parts) == 0 {
 		return
 	}
-	evIdx, err1 := strconv.Atoi(parts[1])
-	actIdx, err2 := strconv.Atoi(parts[2])
-	if err1 != nil || err2 != nil {
-		return
+	switch parts[0] {
+	case "act":
+		if len(parts) != 2 {
+			return
+		}
+		idx, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return
+		}
+		actions := actActions()
+		if idx < 0 || idx >= len(actions) {
+			return
+		}
+		respond(s, i, actions[idx].Text)
+	case "evt":
+		if len(parts) != 3 {
+			return
+		}
+		evIdx, err1 := strconv.Atoi(parts[1])
+		actIdx, err2 := strconv.Atoi(parts[2])
+		if err1 != nil || err2 != nil {
+			return
+		}
+		all := events.All()
+		if evIdx < 0 || evIdx >= len(all) {
+			return
+		}
+		ev := all[evIdx]
+		if actIdx < 0 || actIdx >= len(ev.Actions) {
+			return
+		}
+		respond(s, i, ev.Actions[actIdx].Text)
 	}
-	all := events.All()
-	if evIdx < 0 || evIdx >= len(all) {
-		return
-	}
-	ev := all[evIdx]
-	if actIdx < 0 || actIdx >= len(ev.Actions) {
-		return
-	}
-	respond(s, i, ev.Actions[actIdx].Text)
 }
 
 func (a *App) randomHit(cfg *config.Config, channelID string) bool {
@@ -748,6 +848,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "event" {
 		a.handleEventCommand(s, i)
+		return
+	}
+	if data.Name == "act" {
+		a.handleActInteraction(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -1216,17 +1320,6 @@ func (a *App) setEvent(text string) string {
 }
 
 func (a *App) handleEventCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	caller := ""
-	if i.Member != nil && i.Member.User != nil {
-		caller = i.Member.User.ID
-	} else if i.User != nil {
-		caller = i.User.ID
-	}
-	uid, err := u64(caller)
-	if err != nil || !a.isElevated(uid) {
-		respond(s, i, "you are not allowed to change mini events.")
-		return
-	}
 	var value string
 	for _, o := range i.ApplicationCommandData().Options {
 		if o.Name == "value" {
@@ -1237,11 +1330,6 @@ func (a *App) handleEventCommand(s *discordgo.Session, i *discordgo.InteractionC
 }
 
 func (a *App) handlePrefixEvent(s *discordgo.Session, m *discordgo.MessageCreate) {
-	uid, err := u64(m.Author.ID)
-	if err != nil || !a.isElevated(uid) {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change mini events.", m.Reference())
-		return
-	}
 	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/event"):])
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setEvent(value), m.Reference())
 }
@@ -1290,7 +1378,8 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/chance <0-100> — owner/admin controls, random reply percent\n" +
 		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
 		"/forget [all] — owner/admin controls, clear AI memory\n" +
-		"/event on|off — owner/admin controls, mini events\n" +
+		"/event on|off — anyone, mini events\n" +
+		"/act — anyone, ACT on Ralsei\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
