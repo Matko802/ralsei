@@ -179,18 +179,31 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 			},
 		},
 	}
-	if globals, err := s.ApplicationCommands(s.State.User.ID, ""); err == nil {
-		for _, c := range globals {
-			if err := s.ApplicationCommandDelete(s.State.User.ID, "", c.ID); err != nil {
-				log.Printf("global command delete %s: %v", c.Name, err)
-			}
-		}
+	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
+		discordgo.InteractionContextGuild,
+	})
+	dmCmds := withContexts(cmds, []discordgo.InteractionContextType{
+		discordgo.InteractionContextBotDM,
+		discordgo.InteractionContextPrivateChannel,
+	})
+	if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", dmCmds); err != nil {
+		log.Printf("command register global: %v", err)
 	}
 	for _, g := range e.Guilds {
-		if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, g.ID, cmds); err != nil {
+		if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, g.ID, guildCmds); err != nil {
 			log.Printf("command register guild %s: %v", g.ID, err)
 		}
 	}
+}
+
+func withContexts(cmds []*discordgo.ApplicationCommand, ctx []discordgo.InteractionContextType) []*discordgo.ApplicationCommand {
+	out := make([]*discordgo.ApplicationCommand, 0, len(cmds))
+	for _, c := range cmds {
+		clone := *c
+		clone.Contexts = &ctx
+		out = append(out, &clone)
+	}
+	return out
 }
 
 func (a *App) snapshot() *config.Config {
