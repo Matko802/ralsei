@@ -82,6 +82,15 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 		{
 			Name:        "ai",
 			Description: "control the AI",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Name:        "action",
@@ -107,6 +116,15 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 		{
 			Name:        "ask",
 			Description: "ask the AI something",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Name:        "text",
@@ -204,6 +222,17 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	uid, err := u64(m.Author.ID)
 	if err == nil && a.isBlocked(uid) {
+		return
+	}
+
+	trimmedRaw := strings.TrimSpace(m.Content)
+	lowerRaw := strings.ToLower(trimmedRaw)
+	if lowerRaw == "/ai" || strings.HasPrefix(lowerRaw, "/ai ") {
+		a.handlePrefixAI(s, m)
+		return
+	}
+	if lowerRaw == "/help" || lowerRaw == "/commands" {
+		a.sendHelp(s, m)
 		return
 	}
 
@@ -384,30 +413,7 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 
 	switch action {
 	case "status":
-		state := "off"
-		if cfg.AIEnabled {
-			state = "on"
-		}
-		st := a.eng.Status()
-		ollama := "not reachable"
-		installed := ""
-		if st.Running {
-			ollama = "running (local)"
-			found := false
-			for _, m := range st.Models {
-				if m == cfg.AIModel || strings.HasPrefix(m, cfg.AIModel+":") {
-					found = true
-					break
-				}
-			}
-			if found {
-				installed = ", installed"
-			} else {
-				installed = ", not installed"
-			}
-		}
-		respond(s, i, fmt.Sprintf("AI is %s. Ollama is %s. model: %s%s. think: %v.",
-			state, ollama, cfg.AIModel, installed, cfg.AIThink))
+		respond(s, i, a.statusText())
 	case "on":
 		a.mu.Lock()
 		cfg.AIEnabled = true
@@ -441,6 +447,112 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	default:
 		respond(s, i, "unknown action.")
 	}
+}
+
+func (a *App) statusText() string {
+	cfg := a.snapshot()
+	state := "off"
+	if cfg.AIEnabled {
+		state = "on"
+	}
+	st := a.eng.Status()
+	ollama := "not reachable"
+	installed := ""
+	if st.Running {
+		ollama = "running (local)"
+		found := false
+		for _, m := range st.Models {
+			if m == cfg.AIModel || strings.HasPrefix(m, cfg.AIModel+":") {
+				found = true
+				break
+			}
+		}
+		if found {
+			installed = ", installed"
+		} else {
+			installed = ", not installed"
+		}
+	}
+	return fmt.Sprintf("AI is %s. Ollama is %s. model: %s%s. think: %v.",
+		state, ollama, cfg.AIModel, installed, cfg.AIThink)
+}
+
+func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to control the AI.", m.Reference())
+		return
+	}
+	trimmed := strings.TrimSpace(m.Content)
+	args := strings.Fields(trimmed[3:])
+	action := "status"
+	if len(args) > 0 {
+		action = strings.ToLower(args[0])
+	}
+	switch action {
+	case "status":
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, a.statusText(), m.Reference())
+	case "on", "true":
+		a.mu.Lock()
+		a.cfg.AIEnabled = true
+		a.mu.Unlock()
+		a.persist()
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI enabled.", m.Reference())
+	case "off", "false":
+		a.mu.Lock()
+		a.cfg.AIEnabled = false
+		a.mu.Unlock()
+		a.persist()
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI disabled.", m.Reference())
+	case "clear", "forget":
+		a.eng.ClearAll()
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI history cleared.", m.Reference())
+	case "model":
+		name := ""
+		if strings.HasPrefix(action, "model:") {
+			name = strings.TrimSpace(args[0][6:])
+		}
+		if name == "" && len(args) > 1 {
+			name = strings.TrimSpace(args[1])
+		}
+		if name == "" {
+			_, _ = s.ChannelMessageSendReply(m.ChannelID, "usage: /ai model <name>", m.Reference())
+			return
+		}
+		if !validModelName(name) {
+			_, _ = s.ChannelMessageSendReply(m.ChannelID, "invalid model name.", m.Reference())
+			return
+		}
+		a.mu.Lock()
+		a.cfg.AIModel = name
+		a.mu.Unlock()
+		a.applyAIConfig()
+		a.persist()
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI model set to "+name+".", m.Reference())
+	default:
+		if strings.HasPrefix(action, "model:") {
+			name := strings.TrimSpace(args[0][6:])
+			if name == "" || !validModelName(name) {
+				_, _ = s.ChannelMessageSendReply(m.ChannelID, "usage: /ai model <name>", m.Reference())
+				return
+			}
+			a.mu.Lock()
+			a.cfg.AIModel = name
+			a.mu.Unlock()
+			a.applyAIConfig()
+			a.persist()
+			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI model set to "+name+".", m.Reference())
+			return
+		}
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "usage: /ai status | on | off | clear | model <name>", m.Reference())
+	}
+}
+
+func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
+	text := "mention me, write my name, reply to me or use /ask <question> — I answer with local AI.\n" +
+		"/ask <question> — ask me\n" +
+		"/ai status|on|off|clear|model <name> — owner/admin controls"
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
 
 func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
