@@ -22,6 +22,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
 - `/event on|off` — anyone can toggle mini events
 - `/act` — anyone, opens a Deltarune battle window: FIGHT is a timing minigame (fast STRIKE = more damage, 2-6% TP), ACT builds Mercy, MERCY spares at 100% Mercy or tired (HP <= 50%), FLEE deletes the message, and a CONTINUE button appears when Ralsei is down
+- `/vc join|leave` — anyone, joins your voice channel and plays battle noises (FIGHT hits/misses, ACT, MERCY, CONTINUE, FLEE, mini events); `/act` auto-joins when you are in a voice channel. Needs Connect + Speak permissions. Sounds are generated in code, no game assets are shipped.
 - Mini events in random channels (default 2%, 10 min cooldown): a scene appears with ACT buttons for choices
 - Live config reload: editing `~/.config/ralsei/config.jsonc` applies within a couple of seconds, no restart
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`

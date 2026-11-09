@@ -22,6 +22,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/Matko802/ralsei/internal/ai"
+	"github.com/Matko802/ralsei/internal/audio"
 	"github.com/Matko802/ralsei/internal/config"
 	"github.com/Matko802/ralsei/internal/events"
 	"github.com/Matko802/ralsei/internal/gamebox"
@@ -31,6 +32,7 @@ type App struct {
 	mu        sync.Mutex
 	eventMu   sync.Mutex
 	battleMu  sync.Mutex
+	voiceMu   sync.Mutex
 	lastEvent map[string]time.Time
 	battles   map[string]*battleState
 	cfg       *config.Config
@@ -38,6 +40,8 @@ type App struct {
 	eng       *ai.Engine
 	gb        *gamebox.Renderer
 	dg        *discordgo.Session
+	voice     *discordgo.VoiceConnection
+	soundQ    chan audio.Sound
 }
 
 func main() {
@@ -53,7 +57,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState)}
+	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState), soundQ: make(chan audio.Sound, 16)}
 	app.eng = ai.New(ai.Config{
 		Host:        cfg.OllamaHost,
 		Model:       cfg.AIModel,
@@ -76,6 +80,7 @@ func main() {
 	dg.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsGuildMessageTyping |
+		discordgo.IntentsGuildVoiceStates |
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsDirectMessageTyping |
 		discordgo.IntentsMessageContent)
@@ -85,6 +90,7 @@ func main() {
 		log.Fatalf("gateway: %v", err)
 	}
 	go app.watchConfig(path, cfg.DiscordToken)
+	go app.soundWorker()
 
 	log.Println("ralsei is running, press ctrl+c to exit")
 	stop := make(chan os.Signal, 1)
@@ -307,6 +313,29 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				discordgo.ApplicationIntegrationUserInstall,
 			},
 		},
+		{
+			Name:        "vc",
+			Description: "join or leave your voice channel",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "action",
+					Description: "join or leave",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "join", Value: "join"},
+						{Name: "leave", Value: "leave"},
+					},
+				},
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -447,6 +476,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	if lowerRaw == "/act" || strings.HasPrefix(lowerRaw, "/act ") {
 		a.handleActCommand(s, m)
+		return
+	}
+	if lowerRaw == "/vc" || strings.HasPrefix(lowerRaw, "/vc ") {
+		a.handlePrefixVc(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -649,6 +682,7 @@ func (a *App) triggerEvent(s *discordgo.Session, m *discordgo.MessageCreate) {
 	idx := rand.IntN(len(all))
 	ev := all[idx]
 	log.Printf("mini event %d in %s", idx, m.ChannelID)
+	a.playSound("event")
 
 	msg := &discordgo.MessageSend{
 		Components: a.eventComponents(idx, ev),
@@ -760,6 +794,7 @@ func actText(id string) string {
 
 func (a *App) sendBattle(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) {
 	id, st := a.newBattle()
+	a.playSound("menu")
 	msg := &discordgo.MessageSend{
 		Components: battleComponents(id),
 		Reference:  ref,
@@ -785,6 +820,8 @@ func (a *App) handleActCommand(s *discordgo.Session, m *discordgo.MessageCreate)
 
 func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	id, st := a.newBattle()
+	a.autoJoinVoice(i)
+	a.playSound("menu")
 	a.respondGamebox(s, i, battleText(st), battleComponents(id))
 }
 
@@ -860,6 +897,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		switch action {
 		case "fight":
 			st.FightStart = time.Now()
+			a.playSound("select")
 			text := fmt.Sprintf("RALSEI   HP %d/%d\nFIGHT\nPress STRIKE with good timing!", st.HP, st.MaxHP)
 			a.battleMu.Unlock()
 			a.respondGamebox(s, i, text, strikeComponents(id))
@@ -882,6 +920,11 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			st.TP += acc / 20
 			if st.TP > 100 {
 				st.TP = 100
+			}
+			if dmg == 0 {
+				a.playSound("miss")
+			} else {
+				a.playSound("hit")
 			}
 			var text string
 			if dmg == 0 {
@@ -908,6 +951,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			a.battleMu.Unlock()
 			a.respondGamebox(s, i, text+"\n\n"+menu, battleComponents(id))
 		case "continue":
+			a.playSound("continue")
 			st.HP = st.MaxHP
 			menu := battleText(st)
 			a.battleMu.Unlock()
@@ -916,9 +960,11 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			if spareable(st) {
 				a.battleMu.Unlock()
 				a.dropBattle(id)
+				a.playSound("win")
 				a.respondGamebox(s, i, "YOU WON!\nRalsei was spared.", nil)
 				return
 			}
+			a.playSound("miss")
 			st.Mercy += 10
 			if st.Mercy > 100 {
 				st.Mercy = 100
@@ -928,10 +974,12 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			a.respondGamebox(s, i, "You tried to SPARE Ralsei, but his name was not YELLOW...\n(+10% MERCY)\n\n"+menu, battleComponents(id))
 		case "flee":
 			a.battleMu.Unlock()
+			a.playSound("flee")
 			a.fleeMenu(s, i, id)
 		case "act":
 			if len(parts) == 3 {
 				a.battleMu.Unlock()
+				a.playSound("menu")
 				a.respondGamebox(s, i, actText(id), actMenuComponents(id))
 				return
 			}
@@ -952,10 +1000,12 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 					st.Mercy = 100
 				}
 			}
+			a.playSound("act")
 			menu := battleText(st)
 			a.battleMu.Unlock()
 			a.respondGamebox(s, i, act.Text+"\n\n"+menu, battleComponents(id))
 		case "back":
+			a.playSound("menu")
 			menu := battleText(st)
 			a.battleMu.Unlock()
 			a.respondGamebox(s, i, menu, battleComponents(id))
@@ -992,6 +1042,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if actIdx < 0 || actIdx >= len(ev.Actions) {
 			return
 		}
+		a.playSound("act")
 		a.respondGamebox(s, i, ev.Actions[actIdx].Text, a.eventComponents(evIdx, ev))
 	}
 }
@@ -1078,6 +1129,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "act" {
 		a.handleActInteraction(s, i)
+		return
+	}
+	if data.Name == "vc" {
+		a.handleVcCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -1560,6 +1615,131 @@ func (a *App) handlePrefixEvent(s *discordgo.Session, m *discordgo.MessageCreate
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setEvent(value), m.Reference())
 }
 
+func (a *App) soundWorker() {
+	for snd := range a.soundQ {
+		a.voiceMu.Lock()
+		vc := a.voice
+		a.voiceMu.Unlock()
+		if vc == nil || !vc.Ready {
+			continue
+		}
+		for _, frame := range snd.Frames {
+			select {
+			case vc.OpusSend <- frame:
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+}
+
+func (a *App) playSound(name string) {
+	snd := audio.Get(name)
+	if len(snd.Frames) == 0 {
+		return
+	}
+	select {
+	case a.soundQ <- snd:
+	default:
+	}
+}
+
+func (a *App) joinVoice(guildID, channelID string) error {
+	a.voiceMu.Lock()
+	defer a.voiceMu.Unlock()
+	if a.voice != nil {
+		if a.voice.ChannelID == channelID {
+			return nil
+		}
+		a.voice.Disconnect()
+		a.voice = nil
+	}
+	vc, err := a.dg.ChannelVoiceJoin(guildID, channelID, false, true)
+	if err != nil {
+		return err
+	}
+	a.voice = vc
+	log.Printf("voice joined %s", channelID)
+	return nil
+}
+
+func (a *App) leaveVoice() {
+	a.voiceMu.Lock()
+	defer a.voiceMu.Unlock()
+	if a.voice != nil {
+		a.voice.Disconnect()
+		a.voice = nil
+	}
+}
+
+func (a *App) autoJoinVoice(i *discordgo.InteractionCreate) {
+	if i.GuildID == "" || i.Member == nil || i.Member.User == nil {
+		return
+	}
+	vs, err := a.dg.State.VoiceState(i.GuildID, i.Member.User.ID)
+	if err != nil || vs.ChannelID == "" {
+		return
+	}
+	if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
+		log.Printf("voice join: %v", err)
+	}
+}
+
+func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.GuildID == "" {
+		respond(s, i, "voice only works in servers.")
+		return
+	}
+	action := "join"
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "action" {
+			action = o.StringValue()
+		}
+	}
+	if action == "leave" {
+		a.leaveVoice()
+		respond(s, i, "left the voice channel.")
+		return
+	}
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	vs, err := s.State.VoiceState(i.GuildID, caller)
+	if err != nil || vs.ChannelID == "" {
+		respond(s, i, "join a voice channel first, then run /vc join.")
+		return
+	}
+	if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
+		respond(s, i, "could not join voice: "+err.Error())
+		return
+	}
+	respond(s, i, "joined <#"+vs.ChannelID+">.")
+}
+
+func (a *App) handlePrefixVc(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.GuildID == "" {
+		return
+	}
+	arg := strings.ToLower(strings.TrimSpace(strings.TrimSpace(m.Content)[len("/vc"):]))
+	if arg == "leave" || arg == "stop" {
+		a.leaveVoice()
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "left the voice channel.", m.Reference())
+		return
+	}
+	vs, err := s.State.VoiceState(m.GuildID, m.Author.ID)
+	if err != nil || vs.ChannelID == "" {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "join a voice channel first.", m.Reference())
+		return
+	}
+	if err := a.joinVoice(m.GuildID, vs.ChannelID); err != nil {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "could not join voice.", m.Reference())
+		return
+	}
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "joined <#"+vs.ChannelID+">.", m.Reference())
+}
+
 func (a *App) watchConfig(path, token string) {
 	lastMod := time.Time{}
 	lastSize := int64(-1)
@@ -1606,6 +1786,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/forget [all] — owner/admin controls, clear AI memory\n" +
 		"/event on|off — anyone, mini events\n" +
 		"/act — anyone, Deltarune battle: FIGHT (timing), ACT (mercy), MERCY (spare), FLEE (deletes message)\n" +
+		"/vc join|leave — join your voice channel for battle sounds\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
