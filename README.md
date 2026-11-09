@@ -65,6 +65,21 @@ The config path can also be set with `RALSEI_CONFIG`. Default: `~/.config/ralsei
 
 `ai_prompt` is the bot's personality. You can also set it from Discord with `/personality <text>`; edits to the config file are picked up live (polled every 2 seconds) and applied without restarting.
 
+## Podman
+
+The bot runs as a rootless Podman container managed by a quadlet unit.
+
+```sh
+podman build -t localhost/ralsei:latest .
+mkdir -p ~/.config/containers/systemd
+cp deploy/ralsei.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user start ralsei.service
+podman logs -f ralsei
+```
+
+The container uses host networking so it can reach Ollama on `127.0.0.1:11434`, and `~/.config/ralsei` is mounted at `/config` so the JSONC config stays on the host and keeps hot-reloading. `deploy/ralsei.container` sets `Pull=never` because the image is built locally.
+
 ## Systemd user service
 
 ```ini
