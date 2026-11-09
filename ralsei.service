@@ -1,0 +1,15 @@
+[Unit]
+Description=ralsei - Ollama Discord bot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ralsei
+ExecStart=%h/ralsei/ralsei
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
