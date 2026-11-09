@@ -199,29 +199,8 @@ func supportsThinking(err string) bool {
 		strings.Contains(err, "thinking is not supported")
 }
 
-func isEmoji(r rune) bool {
-	switch {
-	case r >= 0x1F000 && r <= 0x1FAFF:
-		return true
-	case r >= 0x2600 && r <= 0x27BF:
-		return true
-	case r >= 0x2B00 && r <= 0x2BFF:
-		return true
-	case r >= 0x1F1E6 && r <= 0x1F1FF:
-		return true
-	case r == 0xFE0F || r == 0x200D || r == 0x20E3:
-		return true
-	case r == 0x3030 || r == 0x303D || r == 0x3297 || r == 0x3299:
-		return true
-	}
-	return false
-}
-
 func sanitizeReply(raw string) string {
 	s := strings.Map(func(r rune) rune {
-		if isEmoji(r) {
-			return -1
-		}
 		if r < 0x20 && r != '\n' && r != '\t' {
 			return ' '
 		}

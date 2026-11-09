@@ -179,8 +179,12 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 			},
 		},
 	}
-	if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", cmds); err != nil {
-		log.Printf("command register: %v", err)
+	if globals, err := s.ApplicationCommands(s.State.User.ID, ""); err == nil {
+		for _, c := range globals {
+			if err := s.ApplicationCommandDelete(s.State.User.ID, "", c.ID); err != nil {
+				log.Printf("global command delete %s: %v", c.Name, err)
+			}
+		}
 	}
 	for _, g := range e.Guilds {
 		if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, g.ID, cmds); err != nil {
