@@ -413,7 +413,7 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	if !enabled(cfg) {
 		if isAsk || mentioned || repliedToBot || isDM {
-			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI is off — the owner runs /ai on to enable me.", m.Reference())
+			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI is off right now.", m.Reference())
 		}
 		return
 	}
@@ -442,23 +442,6 @@ func (a *App) repliedToBot(s *discordgo.Session, m *discordgo.MessageCreate, bot
 	return false
 }
 
-type liveText struct {
-	mu sync.Mutex
-	s  string
-}
-
-func (l *liveText) set(s string) {
-	l.mu.Lock()
-	l.s = s
-	l.mu.Unlock()
-}
-
-func (l *liveText) get() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.s
-}
-
 func (a *App) editInteractionImage(s *discordgo.Session, i *discordgo.InteractionCreate, img []byte) error {
 	att := []*discordgo.MessageAttachment{}
 	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -468,136 +451,16 @@ func (a *App) editInteractionImage(s *discordgo.Session, i *discordgo.Interactio
 	return err
 }
 
-func (a *App) editImage(s *discordgo.Session, channelID, msgID string, img []byte) error {
-	empty := ""
-	att := []*discordgo.MessageAttachment{}
-	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-		Channel:     channelID,
-		ID:          msgID,
-		Content:     &empty,
-		Attachments: &att,
-		Files:       []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
-	})
-	return err
-}
-
-func (a *App) liveEdit(s *discordgo.Session, channelID, msgID string, live *liveText, stop <-chan struct{}) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			txt := strings.TrimSpace(live.get())
-			if txt == "" {
-				continue
-			}
-			cfg := a.snapshot()
-			if cfg.Gamebox && a.gb != nil {
-				img, err := a.gb.Render(txt)
-				if err != nil {
-					log.Printf("live render: %v", err)
-					continue
-				}
-				if err := a.editImage(s, channelID, msgID, img); err != nil {
-					log.Printf("live edit: %v", err)
-				}
-				continue
-			}
-			if _, err := s.ChannelMessageEdit(channelID, msgID, txt); err != nil {
-				log.Printf("live edit: %v", err)
-			}
-		}
-	}
-}
-
-func (a *App) sendPlaceholder(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) *discordgo.Message {
-	cfg := a.snapshot()
-	if cfg.Gamebox && a.gb != nil {
-		if img, err := a.gb.Render("..."); err == nil {
-			msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-				Files:     []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
-				Reference: ref,
-			})
-			if err == nil {
-				return msg
-			}
-			log.Printf("placeholder: %v", err)
-		}
-	}
-	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content:   "...",
-		Reference: ref,
-	})
-	if err != nil {
-		log.Printf("placeholder: %v", err)
-		return nil
-	}
-	return msg
-}
-
 func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, historyKey uint64, speaker, prompt string) {
 	stopTyping := a.startTyping(channelID)
-	defer close(stopTyping)
-
-	live := &liveText{}
-	msg := a.sendPlaceholder(s, channelID, ref)
-	stop := make(chan struct{})
-	if msg != nil {
-		go a.liveEdit(s, channelID, msg.ID, live, stop)
-	}
-
-	logged := false
-	reply, err := a.eng.AskStream(historyKey, speaker, prompt, func(t string) {
-		if !logged && strings.TrimSpace(t) != "" {
-			logged = true
-			log.Printf("ai first delta")
-		}
-		live.set(t)
-	})
-	close(stop)
+	reply, err := a.eng.Ask(historyKey, speaker, prompt)
+	close(stopTyping)
 	if err != nil {
 		log.Printf("ai: %v", err)
-		if msg != nil {
-			_, _ = s.ChannelMessageEdit(channelID, msg.ID, "AI error, try again later.")
-		} else {
-			_, _ = s.ChannelMessageSendReply(channelID, "AI error, try again later.", ref)
-		}
+		_, _ = s.ChannelMessageSendReply(channelID, "AI error, try again later.", ref)
 		return
 	}
-	if msg == nil {
-		a.sendReply(s, channelID, ref, reply)
-		return
-	}
-	a.finishEdit(s, channelID, msg.ID, reply)
-}
-
-func (a *App) finishEdit(s *discordgo.Session, channelID, msgID, text string) {
-	cfg := a.snapshot()
-	if cfg.Gamebox && a.gb != nil {
-		img, err := a.gb.Render(text)
-		if err == nil {
-			if err := a.editImage(s, channelID, msgID, img); err == nil {
-				return
-			} else {
-				log.Printf("gamebox edit: %v", err)
-			}
-		} else {
-			log.Printf("gamebox render: %v", err)
-		}
-	}
-	chunks := ai.ChunkReply(text)
-	if _, err := s.ChannelMessageEdit(channelID, msgID, chunks[0]); err != nil {
-		log.Printf("final edit: %v", err)
-		return
-	}
-	for _, c := range chunks[1:] {
-		if _, err := s.ChannelMessageSend(channelID, c); err != nil {
-			log.Printf("send: %v", err)
-			return
-		}
-	}
+	a.sendReply(s, channelID, ref, reply)
 }
 
 func (a *App) sendReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, text string) {
@@ -1161,7 +1024,7 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 	cfg := a.snapshot()
 	if !enabled(cfg) {
-		respond(s, i, "AI is off — the owner runs /ai on to enable me.")
+		respond(s, i, "AI is off right now.")
 		return
 	}
 	caller := ""
@@ -1198,50 +1061,7 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 			display = i.User.Username
 		}
 	}
-	live := &liveText{}
-	stop := make(chan struct{})
-	if cfg.Gamebox && a.gb != nil {
-		if img, err := a.gb.Render("..."); err == nil {
-			if err := a.editInteractionImage(s, i, img); err != nil {
-				log.Printf("placeholder: %v", err)
-			}
-		}
-	} else {
-		txt := "..."
-		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &txt})
-	}
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				txt := strings.TrimSpace(live.get())
-				if txt == "" {
-					continue
-				}
-				cfg := a.snapshot()
-				if cfg.Gamebox && a.gb != nil {
-					img, err := a.gb.Render(txt)
-					if err != nil {
-						log.Printf("live render: %v", err)
-						continue
-					}
-					if err := a.editInteractionImage(s, i, img); err != nil {
-						log.Printf("live edit: %v", err)
-					}
-					continue
-				}
-				if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &txt}); err != nil {
-					log.Printf("live edit: %v", err)
-				}
-			}
-		}
-	}()
-	reply, err := a.eng.AskStream(historyKey, ai.SpeakerTag(display), text, live.set)
-	close(stop)
+	reply, err := a.eng.Ask(historyKey, ai.SpeakerTag(display), text)
 	if err != nil {
 		log.Printf("ai: %v", err)
 		msg := "AI error, try again later."
