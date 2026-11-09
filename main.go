@@ -674,10 +674,10 @@ type actAction struct {
 
 func actActions() []actAction {
 	return []actAction{
-		{Label: "Compliment", Style: "success", Text: "You tell Ralsei he is doing great. He looks away, ears pink. That... means a lot, thank you."},
-		{Label: "Hug", Style: "primary", Text: "You hug Ralsei. He goes very still, then hugs back. Oh! Okay. This is nice."},
-		{Label: "Flirt", Style: "danger", Text: "You flirt with Ralsei. He turns bright red and hides behind his scarf. I, um. I do not know what to say to that!"},
-		{Label: "Check", Style: "secondary", Text: "RALSEI - ATK 3 DEF 3. A gentle prince who believes in you. His scarf is very soft."},
+		{Label: "Compliment", Style: "success", Text: "(You tell Ralsei he is doing great. He looks away, ears pink.) That means a lot, thank you."},
+		{Label: "Hug", Style: "primary", Text: "(You hug Ralsei. He goes very still, then hugs back.) Oh! Okay. This is nice."},
+		{Label: "Flirt", Style: "danger", Text: "(You flirt with Ralsei. He turns bright red and hides behind his scarf.) I, um. I do not know what to say to that!"},
+		{Label: "Check", Style: "secondary", Text: "(RALSEI - ATK 3 DEF 3. A gentle prince who believes in you. His scarf is very soft.)"},
 	}
 }
 
