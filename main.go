@@ -66,6 +66,7 @@ func main() {
 	if err := dg.Open(); err != nil {
 		log.Fatalf("gateway: %v", err)
 	}
+	go app.watchConfig(path, cfg.DiscordToken)
 
 	log.Println("ralsei is running, press ctrl+c to exit")
 	stop := make(chan os.Signal, 1)
@@ -128,6 +129,27 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 					Description: "your question",
 					Type:        discordgo.ApplicationCommandOptionString,
 					Required:    true,
+				},
+			},
+		},
+		{
+			Name:        "personality",
+			Description: "change how the AI behaves",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "text",
+					Description: "new personality text, or reset to restore the default",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
 				},
 			},
 		},
@@ -226,6 +248,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	lowerRaw := strings.ToLower(trimmedRaw)
 	if lowerRaw == "/ai" || strings.HasPrefix(lowerRaw, "/ai ") {
 		a.handlePrefixAI(s, m)
+		return
+	}
+	if lowerRaw == "/personality" || strings.HasPrefix(lowerRaw, "/personality ") {
+		a.handlePrefixPersonality(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -380,6 +406,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		a.handleAskCommand(s, i)
 		return
 	}
+	if data.Name == "personality" {
+		a.handlePersonalityCommand(s, i)
+		return
+	}
 	if data.Name != "ai" {
 		return
 	}
@@ -519,10 +549,95 @@ func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
+func (a *App) setPersonality(text string) string {
+	cfg := a.snapshot()
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "current personality: " + cfg.AIPrompt
+	}
+	if strings.EqualFold(text, "reset") {
+		text = config.DefaultPrompt(cfg.BotName)
+	}
+	a.mu.Lock()
+	a.cfg.AIPrompt = text
+	a.mu.Unlock()
+	a.applyAIConfig()
+	a.persist()
+	return "personality updated."
+}
+
+func (a *App) handlePersonalityCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change the personality.")
+		return
+	}
+	var text string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "text" {
+			text = o.StringValue()
+		}
+	}
+	respondPrivate(s, i, a.setPersonality(text))
+}
+
+func (a *App) handlePrefixPersonality(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change the personality.", m.Reference())
+		return
+	}
+	text := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/personality"):])
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setPersonality(text), m.Reference())
+}
+
+func (a *App) watchConfig(path, token string) {
+	lastMod := time.Time{}
+	lastSize := int64(-1)
+	if fi, err := os.Stat(path); err == nil {
+		lastMod = fi.ModTime()
+		lastSize = fi.Size()
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if fi.ModTime().Equal(lastMod) && fi.Size() == lastSize {
+			continue
+		}
+		lastMod = fi.ModTime()
+		lastSize = fi.Size()
+		cfg, err := config.Load(path)
+		if err != nil {
+			log.Printf("config reload: %v", err)
+			continue
+		}
+		if cfg.DiscordToken != token {
+			log.Printf("config reload: discord_token changed, restart required to apply")
+		}
+		a.mu.Lock()
+		a.cfg = cfg
+		a.mu.Unlock()
+		a.applyAIConfig()
+		log.Printf("config reloaded from %s", path)
+	}
+}
+
 func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 	text := "mention me, write my name, reply to me or use /ask <question> — I answer with local AI.\n" +
 		"/ask <question> — ask me\n" +
-		"/ai status|model <name> — owner/admin controls"
+		"/ai status|model <name> — owner/admin controls\n" +
+		"/personality <text> — owner/admin controls, reset restores default\n" +
+		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
 

@@ -125,7 +125,7 @@ func Load(path string) (*Config, error) {
 		cfg.OllamaHost = "http://127.0.0.1:11434"
 	}
 	if cfg.AIPrompt == "" {
-		cfg.AIPrompt = defaultPrompt(cfg.BotName)
+		cfg.AIPrompt = DefaultPrompt(cfg.BotName)
 	}
 	if cfg.RandomChance <= 0 {
 		cfg.RandomChance = 0.02
@@ -145,6 +145,6 @@ func Save(cfg *Config, path string) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-func defaultPrompt(name string) string {
+func DefaultPrompt(name string) string {
 	return "Your name is " + name + ", a friendly AI assistant. you act friendly like a cute friendly neko and try not to use emojis and try to type short simple answers 10 words if possible say everything from your perspective like you are human."
 }
