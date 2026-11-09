@@ -6,17 +6,19 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 
 ## Features
 
-- Talks through a local Ollama server (`/api/generate`)
+- Talks through a local Ollama server (`/api/chat`)
 - Replies when mentioned, when its name (any case) appears in a message, when someone replies to its message, or via `/ask`
 - In DMs he answers every message directly
 - Keeps per-channel conversation history (20 messages, 6000 chars)
 - Long replies are split into up to 4 Discord messages
+- Streaming replies: the message updates every 5 seconds while the model writes, then becomes the final text or gamebox image
 - `/ask text:<question>` slash command and `/ask <question>` text prefix command (Artixy-style)
-- `/ai status|on|off|clear|model <name>` as slash or text prefix command, plus `/help`
+- `/ai status|model <name>` as slash or text prefix command, plus `/help`
 - Slash commands support guild, bot DM and private channel contexts, with guild and user install (same as Artixy)
-- `/ai status|model <name>` for owner, admins and managers; status is ephemeral (only you see it, DM when using the text prefix)
 - `/personality <text>` for owner, admins and managers — changes `ai_prompt` live; `reset` restores the default
 - `/think true|false` for owner, admins and managers — toggles Ollama thinking output live
+- `/chance <0-100>` for owner, admins and managers — random reply chance
+- `/gamebox on|off` for owner, admins and managers — replies as a Deltarune-style black box image with a white border, the bot avatar on the left (monochrome, 2x contrast) and in-game font
 - Live config reload: editing `~/.config/ralsei/config.jsonc` applies within a couple of seconds, no restart
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`
 - Comments and trailing commas allowed in config (JSONC)

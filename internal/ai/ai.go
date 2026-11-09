@@ -43,7 +43,7 @@ func New(cfg Config) *Engine {
 	return &Engine{
 		hist:   make(map[uint64][]HistoryItem),
 		cfg:    cfg,
-		client: &http.Client{Timeout: 180 * time.Second},
+		client: &http.Client{Timeout: 300 * time.Second},
 	}
 }
 
@@ -117,7 +117,7 @@ type chatResponse struct {
 	Error string `json:"error"`
 }
 
-func (e *Engine) call(url, model, system string, history []HistoryItem, speaker, prompt string, temperature float64, think bool) (string, error) {
+func buildChatBody(model, system string, history []HistoryItem, speaker, prompt string, temperature float64, think, stream bool) ([]byte, error) {
 	msgs := make([]chatMessage, 0, len(history)+2)
 	if strings.TrimSpace(system) != "" {
 		msgs = append(msgs, chatMessage{Role: "system", Content: system})
@@ -138,7 +138,7 @@ func (e *Engine) call(url, model, system string, history []HistoryItem, speaker,
 	req := chatRequest{
 		Model:    model,
 		Messages: msgs,
-		Stream:   false,
+		Stream:   stream,
 		Options: map[string]any{
 			"temperature": temperature,
 			"num_ctx":     4096,
@@ -148,16 +148,24 @@ func (e *Engine) call(url, model, system string, history []HistoryItem, speaker,
 		t := true
 		req.Think = &t
 	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		return "", err
-	}
+	return json.Marshal(req)
+}
+
+func (e *Engine) post(url string, body []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, url+"/api/chat", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := e.client.Do(httpReq)
+	return e.client.Do(httpReq)
+}
+
+func (e *Engine) call(url, model, system string, history []HistoryItem, speaker, prompt string, temperature float64, think bool) (string, error) {
+	body, err := buildChatBody(model, system, history, speaker, prompt, temperature, think, false)
+	if err != nil {
+		return "", err
+	}
+	resp, err := e.post(url, body)
 	if err != nil {
 		return "", err
 	}
@@ -180,6 +188,46 @@ func (e *Engine) call(url, model, system string, history []HistoryItem, speaker,
 		return "", fmt.Errorf("ollama returned empty reply")
 	}
 	return out.Message.Content, nil
+}
+
+func (e *Engine) callStream(url, model, system string, history []HistoryItem, speaker, prompt string, temperature float64, think bool, onDelta func(string)) (string, error) {
+	body, err := buildChatBody(model, system, history, speaker, prompt, temperature, think, true)
+	if err != nil {
+		return "", err
+	}
+	resp, err := e.post(url, body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("ollama %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	dec := json.NewDecoder(resp.Body)
+	var full strings.Builder
+	for {
+		var chunk chatResponse
+		if err := dec.Decode(&chunk); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "", fmt.Errorf("ollama stream: %w", err)
+		}
+		if chunk.Error != "" {
+			return "", fmt.Errorf("ollama: %s", chunk.Error)
+		}
+		if chunk.Message.Content != "" {
+			full.WriteString(chunk.Message.Content)
+			if onDelta != nil {
+				onDelta(full.String())
+			}
+		}
+	}
+	if strings.TrimSpace(full.String()) == "" {
+		return "", fmt.Errorf("ollama returned empty reply")
+	}
+	return full.String(), nil
 }
 
 func supportsThinking(err string) bool {
@@ -247,6 +295,23 @@ func (e *Engine) Ask(channel uint64, speaker, prompt string) (string, error) {
 	raw, err := e.call(url, cfg.Model, cfg.System, history, speaker, prompt, cfg.Temperature, cfg.Think)
 	if err != nil && cfg.Think && supportsThinking(err.Error()) {
 		raw, err = e.call(url, cfg.Model, cfg.System, history, speaker, prompt, cfg.Temperature, false)
+	}
+	if err != nil {
+		return "", err
+	}
+	reply := sanitizeReply(raw)
+	e.push(channel, "user", speaker+": "+prompt)
+	e.push(channel, "assistant", reply)
+	return reply, nil
+}
+
+func (e *Engine) AskStream(channel uint64, speaker, prompt string, onDelta func(string)) (string, error) {
+	cfg := e.snapshotConfig()
+	url := strings.TrimRight(cfg.Host, "/")
+	history := e.snapshot(channel)
+	raw, err := e.callStream(url, cfg.Model, cfg.System, history, speaker, prompt, cfg.Temperature, cfg.Think, onDelta)
+	if err != nil && cfg.Think && supportsThinking(err.Error()) {
+		raw, err = e.callStream(url, cfg.Model, cfg.System, history, speaker, prompt, cfg.Temperature, false, onDelta)
 	}
 	if err != nil {
 		return "", err

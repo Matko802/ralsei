@@ -441,17 +441,109 @@ func (a *App) repliedToBot(s *discordgo.Session, m *discordgo.MessageCreate, bot
 	return false
 }
 
+type liveText struct {
+	mu sync.Mutex
+	s  string
+}
+
+func (l *liveText) set(s string) {
+	l.mu.Lock()
+	l.s = s
+	l.mu.Unlock()
+}
+
+func (l *liveText) get() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.s
+}
+
+func (a *App) liveEdit(s *discordgo.Session, channelID, msgID string, live *liveText, stop <-chan struct{}) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			txt := strings.TrimSpace(live.get())
+			if txt == "" {
+				continue
+			}
+			if _, err := s.ChannelMessageEdit(channelID, msgID, txt); err != nil {
+				log.Printf("live edit: %v", err)
+			}
+		}
+	}
+}
+
 func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, historyKey uint64, speaker, prompt string) {
 	stopTyping := a.startTyping(channelID)
 	defer close(stopTyping)
 
-	reply, err := a.eng.Ask(historyKey, speaker, prompt)
+	live := &liveText{}
+	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:   "...",
+		Reference: ref,
+	})
+	if err != nil {
+		log.Printf("placeholder: %v", err)
+		msg = nil
+	}
+	stop := make(chan struct{})
+	if msg != nil {
+		go a.liveEdit(s, channelID, msg.ID, live, stop)
+	}
+
+	reply, err := a.eng.AskStream(historyKey, speaker, prompt, live.set)
+	close(stop)
 	if err != nil {
 		log.Printf("ai: %v", err)
-		_, _ = s.ChannelMessageSendReply(channelID, "AI error, try again later.", ref)
+		if msg != nil {
+			_, _ = s.ChannelMessageEdit(channelID, msg.ID, "AI error, try again later.")
+		} else {
+			_, _ = s.ChannelMessageSendReply(channelID, "AI error, try again later.", ref)
+		}
 		return
 	}
-	a.sendReply(s, channelID, ref, reply)
+	if msg == nil {
+		a.sendReply(s, channelID, ref, reply)
+		return
+	}
+	a.finishEdit(s, channelID, msg.ID, reply)
+}
+
+func (a *App) finishEdit(s *discordgo.Session, channelID, msgID, text string) {
+	cfg := a.snapshot()
+	if cfg.Gamebox && a.gb != nil {
+		img, err := a.gb.Render(text)
+		if err == nil {
+			empty := ""
+			_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				Channel: channelID,
+				ID:      msgID,
+				Content: &empty,
+				Files:   []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+			})
+			if err == nil {
+				return
+			}
+			log.Printf("gamebox edit: %v", err)
+		} else {
+			log.Printf("gamebox render: %v", err)
+		}
+	}
+	chunks := ai.ChunkReply(text)
+	if _, err := s.ChannelMessageEdit(channelID, msgID, chunks[0]); err != nil {
+		log.Printf("final edit: %v", err)
+		return
+	}
+	for _, c := range chunks[1:] {
+		if _, err := s.ChannelMessageSend(channelID, c); err != nil {
+			log.Printf("send: %v", err)
+			return
+		}
+	}
 }
 
 func (a *App) sendReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, text string) {
@@ -1041,7 +1133,28 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 			display = i.User.Username
 		}
 	}
-	reply, err := a.eng.Ask(historyKey, ai.SpeakerTag(display), text)
+	live := &liveText{}
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				txt := strings.TrimSpace(live.get())
+				if txt == "" {
+					continue
+				}
+				if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &txt}); err != nil {
+					log.Printf("live edit: %v", err)
+				}
+			}
+		}
+	}()
+	reply, err := a.eng.AskStream(historyKey, ai.SpeakerTag(display), text, live.set)
+	close(stop)
 	if err != nil {
 		log.Printf("ai: %v", err)
 		msg := "AI error, try again later."
