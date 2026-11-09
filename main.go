@@ -718,15 +718,35 @@ func (a *App) handleActCommand(s *discordgo.Session, m *discordgo.MessageCreate)
 }
 
 func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	a.respondGamebox(s, i, "ACT\nRalsei waits for your move.", a.actComponents())
+}
+
+func (a *App) respondGamebox(s *discordgo.Session, i *discordgo.InteractionCreate, text string, components []discordgo.MessageComponent) {
+	cfg := a.snapshot()
+	if cfg.Gamebox && a.gb != nil {
+		if img, err := a.gb.Render(text); err == nil {
+			err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Files:      []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+					Components: components,
+				},
+			})
+			if err == nil {
+				return
+			}
+			log.Printf("gamebox respond: %v", err)
+		}
+	}
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content:    "**ACT**\nRalsei waits for your move.",
-			Components: a.actComponents(),
+			Content:    text,
+			Components: components,
 		},
 	})
 	if err != nil {
-		log.Printf("act respond: %v", err)
+		log.Printf("respond: %v", err)
 	}
 }
 
@@ -748,7 +768,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if idx < 0 || idx >= len(actions) {
 			return
 		}
-		respond(s, i, actions[idx].Text)
+		a.respondGamebox(s, i, actions[idx].Text, nil)
 	case "evt":
 		if len(parts) != 3 {
 			return
@@ -766,7 +786,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if actIdx < 0 || actIdx >= len(ev.Actions) {
 			return
 		}
-		respond(s, i, ev.Actions[actIdx].Text)
+		a.respondGamebox(s, i, ev.Actions[actIdx].Text, nil)
 	}
 }
 
