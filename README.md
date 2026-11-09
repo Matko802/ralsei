@@ -19,6 +19,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - `/think true|false` for owner, admins and managers — toggles Ollama thinking output live
 - `/chance <0-100>` for owner, admins and managers — random reply chance
 - `/gamebox on|off` for owner, admins and managers — replies as a Deltarune-style black box image with a white border, the bot avatar on the left (monochrome, 2x contrast) and in-game font
+- `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
 - Live config reload: editing `~/.config/ralsei/config.jsonc` applies within a couple of seconds, no restart
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`
 - Comments and trailing commas allowed in config (JSONC)

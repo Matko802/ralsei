@@ -239,6 +239,31 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "forget",
+			Description: "clear the AI memory",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "scope",
+					Description: "channel (default) or all channels",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "channel", Value: "channel"},
+						{Name: "all", Value: "all"},
+					},
+				},
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -367,6 +392,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	if lowerRaw == "/gamebox" || strings.HasPrefix(lowerRaw, "/gamebox ") {
 		a.handlePrefixGamebox(s, m)
+		return
+	}
+	if lowerRaw == "/forget" || strings.HasPrefix(lowerRaw, "/forget ") {
+		a.handlePrefixForget(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -564,6 +593,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "gamebox" {
 		a.handleGameboxCommand(s, i)
+		return
+	}
+	if data.Name == "forget" {
+		a.handleForgetCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -963,6 +996,53 @@ func (a *App) handlePrefixGamebox(s *discordgo.Session, m *discordgo.MessageCrea
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setGamebox(value), m.Reference())
 }
 
+func (a *App) handleForgetCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to clear the memory.")
+		return
+	}
+	scope := "channel"
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "scope" {
+			scope = o.StringValue()
+		}
+	}
+	if scope == "all" {
+		a.eng.ClearAll()
+		respond(s, i, "all AI memory cleared.")
+		return
+	}
+	if channel, err := u64(i.ChannelID); err == nil {
+		a.eng.Clear(channel)
+	}
+	respond(s, i, "AI memory cleared for this channel.")
+}
+
+func (a *App) handlePrefixForget(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to clear the memory.", m.Reference())
+		return
+	}
+	arg := strings.ToLower(strings.TrimSpace(strings.TrimSpace(m.Content)[len("/forget"):]))
+	if arg == "all" {
+		a.eng.ClearAll()
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "all AI memory cleared.", m.Reference())
+		return
+	}
+	if channel, err := u64(m.ChannelID); err == nil {
+		a.eng.Clear(channel)
+	}
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI memory cleared for this channel.", m.Reference())
+}
+
 func (a *App) watchConfig(path, token string) {
 	lastMod := time.Time{}
 	lastSize := int64(-1)
@@ -1006,6 +1086,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/think true|false — owner/admin controls\n" +
 		"/chance <0-100> — owner/admin controls, random reply percent\n" +
 		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
+		"/forget [all] — owner/admin controls, clear AI memory\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
