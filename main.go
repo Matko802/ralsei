@@ -681,44 +681,75 @@ func actActions() []actAction {
 	}
 }
 
-func (a *App) actComponents() []discordgo.MessageComponent {
+func battleComponents() []discordgo.MessageComponent {
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.Button{Label: "FIGHT", Style: discordgo.DangerButton, CustomID: "battle:fight"},
+		discordgo.Button{Label: "ACT", Style: discordgo.PrimaryButton, CustomID: "battle:act"},
+		discordgo.Button{Label: "MERCY", Style: discordgo.SuccessButton, CustomID: "battle:mercy"},
+		discordgo.Button{Label: "FLEE", Style: discordgo.SecondaryButton, CustomID: "battle:flee"},
+	}}}
+}
+
+func actMenuComponents() []discordgo.MessageComponent {
 	actions := actActions()
-	row := make([]discordgo.MessageComponent, 0, len(actions))
+	row := make([]discordgo.MessageComponent, 0, len(actions)+1)
 	for i, act := range actions {
 		row = append(row, discordgo.Button{
 			Label:    act.Label,
 			Style:    buttonStyle(act.Style),
-			CustomID: fmt.Sprintf("act:%d", i),
+			CustomID: fmt.Sprintf("battle:act:%d", i),
 		})
 	}
+	row = append(row, discordgo.Button{Label: "Back", Style: discordgo.SecondaryButton, CustomID: "battle:back"})
 	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: row}}
 }
 
-func (a *App) sendAct(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) {
+func battleText() string {
+	return "RALSEI   HP 70/70\nWhat will you do?"
+}
+
+func actText() string {
+	return "RALSEI   HP 70/70\nACT"
+}
+
+func (a *App) sendBattle(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) {
 	msg := &discordgo.MessageSend{
-		Components: a.actComponents(),
+		Components: battleComponents(),
 		Reference:  ref,
 	}
 	cfg := a.snapshot()
 	if cfg.Gamebox && a.gb != nil {
-		if img, err := a.gb.Render("ACT\nRalsei waits for your move."); err == nil {
+		if img, err := a.gb.Render(battleText()); err == nil {
 			msg.Files = []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}}
 		}
 	}
 	if len(msg.Files) == 0 {
-		msg.Content = "**ACT**\nRalsei waits for your move."
+		msg.Content = battleText()
 	}
 	if _, err := s.ChannelMessageSendComplex(channelID, msg); err != nil {
-		log.Printf("act send: %v", err)
+		log.Printf("battle send: %v", err)
 	}
 }
 
 func (a *App) handleActCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
-	a.sendAct(s, m.ChannelID, m.Reference())
+	a.sendBattle(s, m.ChannelID, m.Reference())
 }
 
 func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	a.respondGamebox(s, i, "ACT\nRalsei waits for your move.", a.actComponents())
+	a.respondGamebox(s, i, battleText(), battleComponents())
+}
+
+func (a *App) fleeMenu(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+	}); err != nil {
+		log.Printf("flee ack: %v", err)
+	}
+	if i.Message != nil {
+		if err := s.ChannelMessageDelete(i.ChannelID, i.Message.ID); err != nil {
+			log.Printf("flee delete: %v", err)
+		}
+	}
 }
 
 func (a *App) respondGamebox(s *discordgo.Session, i *discordgo.InteractionCreate, text string, components []discordgo.MessageComponent) {
@@ -763,6 +794,34 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 	switch parts[0] {
+	case "battle":
+		if len(parts) < 2 {
+			return
+		}
+		switch parts[1] {
+		case "fight":
+			a.respondGamebox(s, i, "(You attack Ralsei. He does not dodge. Ralsei takes 1 damage.) Ow... that is okay, I can take it.", battleComponents())
+		case "mercy":
+			a.respondGamebox(s, i, "(You spare Ralsei.) Ralsei smiles. Thank you for being kind.", battleComponents())
+		case "flee":
+			a.fleeMenu(s, i)
+		case "back":
+			a.respondGamebox(s, i, battleText(), battleComponents())
+		case "act":
+			if len(parts) == 2 {
+				a.respondGamebox(s, i, actText(), actMenuComponents())
+				return
+			}
+			idx, err := strconv.Atoi(parts[2])
+			if err != nil {
+				return
+			}
+			actions := actActions()
+			if idx < 0 || idx >= len(actions) {
+				return
+			}
+			a.respondGamebox(s, i, actions[idx].Text, battleComponents())
+		}
 	case "act":
 		if len(parts) != 2 {
 			return
@@ -775,7 +834,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if idx < 0 || idx >= len(actions) {
 			return
 		}
-		a.respondGamebox(s, i, actions[idx].Text, a.actComponents())
+		a.respondGamebox(s, i, actions[idx].Text, battleComponents())
 	case "evt":
 		if len(parts) != 3 {
 			return
@@ -1406,7 +1465,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
 		"/forget [all] — owner/admin controls, clear AI memory\n" +
 		"/event on|off — anyone, mini events\n" +
-		"/act — anyone, ACT on Ralsei\n" +
+		"/act — anyone, battle menu: FIGHT, ACT, MERCY, FLEE (FLEE deletes the message)\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
