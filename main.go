@@ -1835,9 +1835,20 @@ func (a *App) autoJoinVoice(i *discordgo.InteractionCreate) {
 	}
 }
 
+func (a *App) dmUser(s *discordgo.Session, userID, text string) {
+	ch, err := s.UserChannelCreate(userID)
+	if err != nil {
+		log.Printf("dm open: %v", err)
+		return
+	}
+	if _, err := s.ChannelMessageSend(ch.ID, text); err != nil {
+		log.Printf("dm send: %v", err)
+	}
+}
+
 func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.GuildID == "" {
-		respond(s, i, "voice only works in servers.")
+		respondPrivate(s, i, "voice only works in servers.")
 		return
 	}
 	action := "join"
@@ -1848,7 +1859,7 @@ func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 	if action == "leave" {
 		a.leaveVoice()
-		respond(s, i, "left the voice channel.")
+		respondPrivate(s, i, "left the voice channel.")
 		return
 	}
 	caller := ""
@@ -1859,16 +1870,24 @@ func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 	vs, err := s.State.VoiceState(i.GuildID, caller)
 	if err != nil || vs.ChannelID == "" {
-		respond(s, i, "join a voice channel first, then run /vc join.")
+		respondPrivate(s, i, "join a voice channel first, then run /vc join.")
 		return
 	}
-	respond(s, i, "joining <#"+vs.ChannelID+">...")
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	}); err != nil {
+		log.Printf("vc defer: %v", err)
+		return
+	}
 	go func() {
 		if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
-			_, _ = s.ChannelMessageSend(i.ChannelID, "could not join voice: "+err.Error())
+			msg := "could not join voice: " + err.Error()
+			_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
 			return
 		}
-		_, _ = s.ChannelMessageSend(i.ChannelID, "joined <#"+vs.ChannelID+">.")
+		msg := "joined <#" + vs.ChannelID + ">."
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
 	}()
 }
 
@@ -1879,21 +1898,21 @@ func (a *App) handlePrefixVc(s *discordgo.Session, m *discordgo.MessageCreate) {
 	arg := strings.ToLower(strings.TrimSpace(strings.TrimSpace(m.Content)[len("/vc"):]))
 	if arg == "leave" || arg == "stop" {
 		a.leaveVoice()
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "left the voice channel.", m.Reference())
+		a.dmUser(s, m.Author.ID, "left the voice channel.")
 		return
 	}
 	vs, err := s.State.VoiceState(m.GuildID, m.Author.ID)
 	if err != nil || vs.ChannelID == "" {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "join a voice channel first.", m.Reference())
+		a.dmUser(s, m.Author.ID, "join a voice channel first.")
 		return
 	}
-	_, _ = s.ChannelMessageSendReply(m.ChannelID, "joining <#"+vs.ChannelID+">...", m.Reference())
+	a.dmUser(s, m.Author.ID, "joining <#"+vs.ChannelID+">...")
 	go func() {
 		if err := a.joinVoice(m.GuildID, vs.ChannelID); err != nil {
-			_, _ = s.ChannelMessageSend(m.ChannelID, "could not join voice.")
+			a.dmUser(s, m.Author.ID, "could not join voice: "+err.Error())
 			return
 		}
-		_, _ = s.ChannelMessageSend(m.ChannelID, "joined <#"+vs.ChannelID+">.")
+		a.dmUser(s, m.Author.ID, "joined <#"+vs.ChannelID+">.")
 	}()
 }
 
