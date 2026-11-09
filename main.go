@@ -531,6 +531,18 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	mentioned := strings.Contains(content, "<@"+id+">") ||
 		strings.Contains(content, "<@!"+id+">") ||
 		(name != "" && strings.Contains(lower, name))
+
+	if m.GuildID != "" && mentioned {
+		body := strings.ToLower(stripName(stripIDTag(content, id), name))
+		if strings.HasPrefix(body, "come") || strings.Contains(body, "come here") {
+			a.handleCome(s, m)
+			return
+		}
+		if strings.HasPrefix(body, "leave") || strings.Contains(body, "leave now") {
+			a.handleVoiceLeave(s, m)
+			return
+		}
+	}
 	repliedToBot := a.repliedToBot(s, m, id)
 
 	var prompt string
@@ -1835,6 +1847,27 @@ func (a *App) autoJoinVoice(i *discordgo.InteractionCreate) {
 	}
 }
 
+func (a *App) handleCome(s *discordgo.Session, m *discordgo.MessageCreate) {
+	vs, err := s.State.VoiceState(m.GuildID, m.Author.ID)
+	if err != nil || vs.ChannelID == "" {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "Um... I don't see you in a voice channel.", m.Reference())
+		return
+	}
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "Okay! I'm coming.", m.Reference())
+	go func() {
+		if err := a.joinVoice(m.GuildID, vs.ChannelID); err != nil {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "I could not join voice: "+err.Error())
+			return
+		}
+		a.speak("I'm here!")
+	}()
+}
+
+func (a *App) handleVoiceLeave(s *discordgo.Session, m *discordgo.MessageCreate) {
+	a.leaveVoice()
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "Okay, I will go now. See you soon!", m.Reference())
+}
+
 func (a *App) dmUser(s *discordgo.Session, userID, text string) {
 	ch, err := s.UserChannelCreate(userID)
 	if err != nil {
@@ -1963,6 +1996,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/event on|off — anyone, mini events\n" +
 		"/act — anyone, Deltarune battle: FIGHT (timing), ACT (mercy), MERCY (spare), FLEE (deletes message)\n" +
 		"/vc join|leave — join your voice channel for battle sounds\n" +
+		"say \"ralsei come here\" to make him join your voice channel, \"ralsei leave\" to make him go\n" +
 		"/tts on|off — owner/admin controls, speak replies in voice\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
