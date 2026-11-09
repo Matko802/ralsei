@@ -9,7 +9,9 @@ import (
 	"image/png"
 	"os"
 	"strings"
+	"sync"
 
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
@@ -23,10 +25,42 @@ const (
 	lineHeight = 42
 	maxLines   = 40
 	maxRunes   = 2000
+	avatarSize = 112
+	avatarGap  = 24
 )
 
 type Renderer struct {
-	face font.Face
+	face   font.Face
+	mu     sync.RWMutex
+	avatar image.Image
+}
+
+func (r *Renderer) SetAvatar(src image.Image) {
+	dst := image.NewRGBA(image.Rect(0, 0, avatarSize, avatarSize))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+	r.mu.Lock()
+	r.avatar = monochrome(dst, 2.0)
+	r.mu.Unlock()
+}
+
+func monochrome(src image.Image, contrast float64) *image.Gray {
+	b := src.Bounds()
+	g := image.NewGray(image.Rect(0, 0, b.Dx(), b.Dy()))
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r16, g16, b16, _ := src.At(x, y).RGBA()
+			lum := (0.299*float64(r16) + 0.587*float64(g16) + 0.114*float64(b16)) / 257
+			v := (lum-128)*contrast + 128
+			if v < 0 {
+				v = 0
+			}
+			if v > 255 {
+				v = 255
+			}
+			g.SetGray(x-b.Min.X, y-b.Min.Y, color.Gray{Y: uint8(v)})
+		}
+	}
+	return g
 }
 
 func Load(paths ...string) (*Renderer, error) {
@@ -118,15 +152,34 @@ func (r *Renderer) wrap(text string, limit int) []string {
 }
 
 func (r *Renderer) Render(text string) ([]byte, error) {
+	r.mu.RLock()
+	avatar := r.avatar
+	r.mu.RUnlock()
+
+	textX := border + padding
 	limit := boxWidth - 2*border - 2*padding
+	if avatar != nil {
+		limit -= avatarSize + avatarGap
+		textX += avatarSize + avatarGap
+	}
 	lines := r.wrap(text, limit)
-	height := 2*(border+padding) + len(lines)*lineHeight
+	textHeight := len(lines) * lineHeight
+	contentHeight := textHeight
+	if avatar != nil && avatarSize > contentHeight {
+		contentHeight = avatarSize
+	}
+	height := 2*(border+padding) + contentHeight
 	img := image.NewRGBA(image.Rect(0, 0, boxWidth, height))
 	white := color.RGBA{255, 255, 255, 255}
 	black := color.RGBA{0, 0, 0, 255}
 	draw.Draw(img, img.Bounds(), &image.Uniform{white}, image.Point{}, draw.Src)
 	inner := image.Rect(border, border, boxWidth-border, height-border)
 	draw.Draw(img, inner, &image.Uniform{black}, image.Point{}, draw.Src)
+
+	if avatar != nil {
+		rect := image.Rect(border+padding, border+padding, border+padding+avatarSize, border+padding+avatarSize)
+		draw.Draw(img, rect, avatar, avatar.Bounds().Min, draw.Src)
+	}
 
 	d := &font.Drawer{
 		Dst:  img,
@@ -136,7 +189,7 @@ func (r *Renderer) Render(text string) ([]byte, error) {
 	ascent := r.face.Metrics().Ascent.Ceil()
 	y := border + padding + ascent
 	for _, line := range lines {
-		d.Dot = fixed.P(border+padding, y)
+		d.Dot = fixed.P(textX, y)
 		d.DrawString(line)
 		y += lineHeight
 	}

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -87,6 +91,7 @@ func main() {
 func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 	meName := a.botName()
 	log.Printf("logged in as %s (%s)", e.User.String(), meName)
+	go a.loadAvatar(e.User)
 
 	cmds := []*discordgo.ApplicationCommand{
 		{
@@ -842,6 +847,26 @@ func (a *App) handlePrefixChance(s *discordgo.Session, m *discordgo.MessageCreat
 	}
 	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/chance"):])
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setChance(value), m.Reference())
+}
+
+func (a *App) loadAvatar(u *discordgo.User) {
+	if a.gb == nil || u == nil {
+		return
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(u.AvatarURL("256"))
+	if err != nil {
+		log.Printf("avatar fetch: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		log.Printf("avatar decode: %v", err)
+		return
+	}
+	a.gb.SetAvatar(img)
+	log.Printf("gamebox avatar loaded")
 }
 
 func loadGamebox(cfgPath string) *gamebox.Renderer {
