@@ -458,6 +458,28 @@ func (l *liveText) get() string {
 	return l.s
 }
 
+func (a *App) editInteractionImage(s *discordgo.Session, i *discordgo.InteractionCreate, img []byte) error {
+	att := []*discordgo.MessageAttachment{}
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Attachments: &att,
+		Files:       []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+	})
+	return err
+}
+
+func (a *App) editImage(s *discordgo.Session, channelID, msgID string, img []byte) error {
+	empty := ""
+	att := []*discordgo.MessageAttachment{}
+	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Channel:     channelID,
+		ID:          msgID,
+		Content:     &empty,
+		Attachments: &att,
+		Files:       []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+	})
+	return err
+}
+
 func (a *App) liveEdit(s *discordgo.Session, channelID, msgID string, live *liveText, stop <-chan struct{}) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -470,6 +492,18 @@ func (a *App) liveEdit(s *discordgo.Session, channelID, msgID string, live *live
 			if txt == "" {
 				continue
 			}
+			cfg := a.snapshot()
+			if cfg.Gamebox && a.gb != nil {
+				img, err := a.gb.Render(txt)
+				if err != nil {
+					log.Printf("live render: %v", err)
+					continue
+				}
+				if err := a.editImage(s, channelID, msgID, img); err != nil {
+					log.Printf("live edit: %v", err)
+				}
+				continue
+			}
 			if _, err := s.ChannelMessageEdit(channelID, msgID, txt); err != nil {
 				log.Printf("live edit: %v", err)
 			}
@@ -477,19 +511,37 @@ func (a *App) liveEdit(s *discordgo.Session, channelID, msgID string, live *live
 	}
 }
 
-func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, historyKey uint64, speaker, prompt string) {
-	stopTyping := a.startTyping(channelID)
-	defer close(stopTyping)
-
-	live := &liveText{}
+func (a *App) sendPlaceholder(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) *discordgo.Message {
+	cfg := a.snapshot()
+	if cfg.Gamebox && a.gb != nil {
+		if img, err := a.gb.Render("..."); err == nil {
+			msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+				Files:     []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+				Reference: ref,
+			})
+			if err == nil {
+				return msg
+			}
+			log.Printf("placeholder: %v", err)
+		}
+	}
 	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Content:   "...",
 		Reference: ref,
 	})
 	if err != nil {
 		log.Printf("placeholder: %v", err)
-		msg = nil
+		return nil
 	}
+	return msg
+}
+
+func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, historyKey uint64, speaker, prompt string) {
+	stopTyping := a.startTyping(channelID)
+	defer close(stopTyping)
+
+	live := &liveText{}
+	msg := a.sendPlaceholder(s, channelID, ref)
 	stop := make(chan struct{})
 	if msg != nil {
 		go a.liveEdit(s, channelID, msg.ID, live, stop)
@@ -518,17 +570,11 @@ func (a *App) finishEdit(s *discordgo.Session, channelID, msgID, text string) {
 	if cfg.Gamebox && a.gb != nil {
 		img, err := a.gb.Render(text)
 		if err == nil {
-			empty := ""
-			_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-				Channel: channelID,
-				ID:      msgID,
-				Content: &empty,
-				Files:   []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
-			})
-			if err == nil {
+			if err := a.editImage(s, channelID, msgID, img); err == nil {
 				return
+			} else {
+				log.Printf("gamebox edit: %v", err)
 			}
-			log.Printf("gamebox edit: %v", err)
 		} else {
 			log.Printf("gamebox render: %v", err)
 		}
@@ -1135,6 +1181,16 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 	live := &liveText{}
 	stop := make(chan struct{})
+	if cfg.Gamebox && a.gb != nil {
+		if img, err := a.gb.Render("..."); err == nil {
+			if err := a.editInteractionImage(s, i, img); err != nil {
+				log.Printf("placeholder: %v", err)
+			}
+		}
+	} else {
+		txt := "..."
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &txt})
+	}
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -1145,6 +1201,18 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 			case <-ticker.C:
 				txt := strings.TrimSpace(live.get())
 				if txt == "" {
+					continue
+				}
+				cfg := a.snapshot()
+				if cfg.Gamebox && a.gb != nil {
+					img, err := a.gb.Render(txt)
+					if err != nil {
+						log.Printf("live render: %v", err)
+						continue
+					}
+					if err := a.editInteractionImage(s, i, img); err != nil {
+						log.Printf("live edit: %v", err)
+					}
 					continue
 				}
 				if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &txt}); err != nil {
@@ -1163,9 +1231,7 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 	if cfg.Gamebox && a.gb != nil {
 		if img, err := a.gb.Render(reply); err == nil {
-			if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Files: []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
-			}); err == nil {
+			if err := a.editInteractionImage(s, i, img); err == nil {
 				return
 			} else {
 				log.Printf("gamebox edit: %v", err)

@@ -101,11 +101,12 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model    string         `json:"model"`
-	Messages []chatMessage  `json:"messages"`
-	Stream   bool           `json:"stream"`
-	Think    *bool          `json:"think,omitempty"`
-	Options  map[string]any `json:"options,omitempty"`
+	Model     string         `json:"model"`
+	Messages  []chatMessage  `json:"messages"`
+	Stream    bool           `json:"stream"`
+	Think     *bool          `json:"think,omitempty"`
+	KeepAlive string         `json:"keep_alive,omitempty"`
+	Options   map[string]any `json:"options,omitempty"`
 }
 
 type chatResponse struct {
@@ -136,9 +137,10 @@ func buildChatBody(model, system string, history []HistoryItem, speaker, prompt 
 	msgs = append(msgs, chatMessage{Role: "user", Content: user})
 
 	req := chatRequest{
-		Model:    model,
-		Messages: msgs,
-		Stream:   stream,
+		Model:     model,
+		Messages:  msgs,
+		Stream:    stream,
+		KeepAlive: "30m",
 		Options: map[string]any{
 			"temperature": temperature,
 			"num_ctx":     4096,

@@ -11,7 +11,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - In DMs he answers every message directly
 - Keeps per-channel conversation history (20 messages, 6000 chars)
 - Long replies are split into up to 4 Discord messages
-- Streaming replies: the message updates every 5 seconds while the model writes, then becomes the final text or gamebox image
+- Streaming replies: the message updates every 5 seconds while the model writes (as the gamebox PNG when gamebox is on), then becomes the final text or image
 - `/ask text:<question>` slash command and `/ask <question>` text prefix command (Artixy-style)
 - `/ai status|model <name>` as slash or text prefix command, plus `/help`
 - Slash commands support guild, bot DM and private channel contexts, with guild and user install (same as Artixy)
