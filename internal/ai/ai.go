@@ -2,6 +2,7 @@ package ai
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,8 +13,8 @@ import (
 )
 
 const (
-	maxHistoryItems = 10
-	maxHistoryChars = 3000
+	maxHistoryItems = 20
+	maxHistoryChars = 6000
 	maxChunks       = 4
 	chunkSize       = 1900
 )
@@ -92,6 +93,42 @@ func (e *Engine) push(channel uint64, role, content string) {
 		q = q[1:]
 	}
 	e.hist[channel] = q
+}
+
+type Status struct {
+	Running bool
+	Models  []string
+}
+
+func (e *Engine) Status() Status {
+	cfg := e.snapshotConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.Host, "/")+"/api/tags", nil)
+	if err != nil {
+		return Status{}
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return Status{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Status{}
+	}
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return Status{}
+	}
+	st := Status{Running: true}
+	for _, m := range tags.Models {
+		st.Models = append(st.Models, m.Name)
+	}
+	return st
 }
 
 type generateRequest struct {

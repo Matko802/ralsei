@@ -102,6 +102,18 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "ask",
+			Description: "ask the AI something",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "text",
+					Description: "your question",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    true,
+				},
+			},
+		},
 	}
 	if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", cmds); err != nil {
 		log.Printf("command register: %v", err)
@@ -191,22 +203,33 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	cfg := a.snapshot()
 	id := s.State.User.ID
 	name := a.botName()
-	lower := strings.ToLower(m.Content)
-	mentioned := strings.Contains(m.Content, "<@"+id+">") ||
-		strings.Contains(m.Content, "<@!"+id+">") ||
+	content := m.Content
+	lower := strings.ToLower(content)
+	trimmed := strings.TrimSpace(lower)
+
+	isAsk := trimmed == "/ask" || strings.HasPrefix(trimmed, "/ask ")
+	mentioned := strings.Contains(content, "<@"+id+">") ||
+		strings.Contains(content, "<@!"+id+">") ||
 		(name != "" && strings.Contains(lower, name))
+	repliedToBot := a.repliedToBot(s, m, id)
 
 	var prompt string
-	if mentioned {
-		prompt = stripName(stripIDTag(m.Content, id), name)
+	switch {
+	case isAsk:
+		prompt = strings.TrimSpace(strings.TrimSpace(m.Content)[4:])
+		if prompt == "" {
+			prompt = "hello"
+		}
+	case repliedToBot || mentioned:
+		prompt = stripName(stripIDTag(content, id), name)
 		if strings.TrimSpace(prompt) == "" {
 			prompt = "hello"
 		}
-	} else {
+	default:
 		if !a.randomHit(cfg, m.ChannelID) {
 			return
 		}
-		prompt = strings.TrimSpace(m.Content)
+		prompt = strings.TrimSpace(content)
 		if len([]rune(prompt)) < 2 {
 			return
 		}
@@ -214,34 +237,55 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if !enabled(cfg) {
-		if mentioned {
+		if isAsk || mentioned || repliedToBot {
 			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI is off — the owner runs /ai on to enable me.", m.Reference())
 		}
 		return
 	}
 
-	stopTyping := a.startTyping(m.ChannelID)
-	defer close(stopTyping)
-
+	historyKey, err := u64(m.ChannelID)
+	if err != nil {
+		return
+	}
 	display := m.Author.GlobalName
 	if display == "" {
 		display = m.Author.Username
 	}
-	reply, err := a.eng.Ask(uid, ai.SpeakerTag(display), prompt)
+	a.askAndReply(s, m.ChannelID, m.Reference(), historyKey, ai.SpeakerTag(display), prompt)
+}
+
+func (a *App) repliedToBot(s *discordgo.Session, m *discordgo.MessageCreate, botID string) bool {
+	if m.ReferencedMessage != nil && m.ReferencedMessage.Author != nil {
+		return m.ReferencedMessage.Author.ID == botID
+	}
+	if m.MessageReference != nil && m.MessageReference.MessageID != "" {
+		ref, err := s.ChannelMessage(m.ChannelID, m.MessageReference.MessageID)
+		if err == nil && ref.Author != nil {
+			return ref.Author.ID == botID
+		}
+	}
+	return false
+}
+
+func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, historyKey uint64, speaker, prompt string) {
+	stopTyping := a.startTyping(channelID)
+	defer close(stopTyping)
+
+	reply, err := a.eng.Ask(historyKey, speaker, prompt)
 	if err != nil {
 		log.Printf("ai: %v", err)
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI error, try again later.", m.Reference())
+		_, _ = s.ChannelMessageSendReply(channelID, "AI error, try again later.", ref)
 		return
 	}
 	chunks := ai.ChunkReply(reply)
 	for i, c := range chunks {
 		if i == 0 {
-			_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			_, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 				Content:   c,
-				Reference: m.Reference(),
+				Reference: ref,
 			})
 		} else {
-			_, err = s.ChannelMessageSend(m.ChannelID, c)
+			_, err = s.ChannelMessageSend(channelID, c)
 		}
 		if err != nil {
 			log.Printf("send: %v", err)
@@ -298,6 +342,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 	data := i.ApplicationCommandData()
+	if data.Name == "ask" {
+		a.handleAskCommand(s, i)
+		return
+	}
 	if data.Name != "ai" {
 		return
 	}
@@ -332,8 +380,26 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		if cfg.AIEnabled {
 			state = "on"
 		}
-		respond(s, i, fmt.Sprintf("AI is %s, model %s, think %v, host %s.",
-			state, cfg.AIModel, cfg.AIThink, cfg.OllamaHost))
+		st := a.eng.Status()
+		ollama := "not reachable"
+		installed := ""
+		if st.Running {
+			ollama = "running (local)"
+			found := false
+			for _, m := range st.Models {
+				if m == cfg.AIModel || strings.HasPrefix(m, cfg.AIModel+":") {
+					found = true
+					break
+				}
+			}
+			if found {
+				installed = ", installed"
+			} else {
+				installed = ", not installed"
+			}
+		}
+		respond(s, i, fmt.Sprintf("AI is %s. Ollama is %s. model: %s%s. think: %v.",
+			state, ollama, cfg.AIModel, installed, cfg.AIThink))
 	case "on":
 		a.mu.Lock()
 		cfg.AIEnabled = true
@@ -366,6 +432,77 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		respond(s, i, "AI model set to "+model+".")
 	default:
 		respond(s, i, "unknown action.")
+	}
+}
+
+func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	var text string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "text" {
+			text = o.StringValue()
+		}
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		respond(s, i, "usage: /ask text:<your question>")
+		return
+	}
+	cfg := a.snapshot()
+	if !enabled(cfg) {
+		respond(s, i, "AI is off — the owner runs /ai on to enable me.")
+		return
+	}
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || a.isBlocked(uid) {
+		respond(s, i, "you are not allowed to use the AI.")
+		return
+	}
+	historyKey, err := u64(i.ChannelID)
+	if err != nil {
+		respond(s, i, "bad channel id.")
+		return
+	}
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		log.Printf("defer: %v", err)
+		return
+	}
+	display := ""
+	if i.Member != nil && i.Member.User != nil {
+		display = i.Member.User.GlobalName
+		if display == "" {
+			display = i.Member.User.Username
+		}
+	} else if i.User != nil {
+		display = i.User.GlobalName
+		if display == "" {
+			display = i.User.Username
+		}
+	}
+	reply, err := a.eng.Ask(historyKey, ai.SpeakerTag(display), text)
+	if err != nil {
+		log.Printf("ai: %v", err)
+		msg := "AI error, try again later."
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
+		return
+	}
+	chunks := ai.ChunkReply(reply)
+	first := chunks[0]
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &first}); err != nil {
+		log.Printf("edit: %v", err)
+	}
+	for _, c := range chunks[1:] {
+		if _, err := s.ChannelMessageSend(i.ChannelID, c); err != nil {
+			log.Printf("send: %v", err)
+			return
+		}
 	}
 }
 

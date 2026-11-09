@@ -7,9 +7,10 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 ## Features
 
 - Talks through a local Ollama server (`/api/generate`)
-- Replies when mentioned or when its name appears in a message
-- Keeps short per-channel conversation history (10 messages, 3000 chars)
-- Splits long replies into up to 4 Discord messages
+- Replies when mentioned, when its name (any case) appears in a message, when someone replies to its message, or via `/ask`
+- Keeps per-channel conversation history (20 messages, 6000 chars)
+- Long replies are split into up to 4 Discord messages
+- `/ask text:<question>` slash command and `/ask <question>` prefix command
 - `/ai status|on|off|clear|model name:<model>` for owner, admins and managers
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`
 - Comments and trailing commas allowed in config (JSONC)
