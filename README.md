@@ -11,8 +11,10 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - In DMs he answers every message directly
 - Keeps per-channel conversation history (20 messages, 6000 chars)
 - Long replies are split into up to 4 Discord messages
-- `/ask text:<question>` slash command and `/ask <question>` prefix command
-- `/ai status|on|off|clear|model name:<model>` for owner, admins and managers
+- `/ask text:<question>` slash command and `/ask <question>` text prefix command (Artixy-style)
+- `/ai status|on|off|clear|model <name>` as slash or text prefix command, plus `/help`
+- Slash commands support guild, bot DM and private channel contexts, with guild and user install (same as Artixy)
+- `/ai status|model <name>` for owner, admins and managers; status is ephemeral (only you see it, DM when using the text prefix)
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`
 - Comments and trailing commas allowed in config (JSONC)
 - Config changes from `/ai` are persisted back to the config file

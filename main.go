@@ -99,9 +99,6 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 					Required:    true,
 					Choices: []*discordgo.ApplicationCommandOptionChoice{
 						{Name: "status", Value: "status"},
-						{Name: "on", Value: "on"},
-						{Name: "off", Value: "off"},
-						{Name: "clear", Value: "clear"},
 						{Name: "model", Value: "model"},
 					},
 				},
@@ -413,22 +410,7 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 
 	switch action {
 	case "status":
-		respond(s, i, a.statusText())
-	case "on":
-		a.mu.Lock()
-		cfg.AIEnabled = true
-		a.mu.Unlock()
-		a.persist()
-		respond(s, i, "AI enabled.")
-	case "off":
-		a.mu.Lock()
-		cfg.AIEnabled = false
-		a.mu.Unlock()
-		a.persist()
-		respond(s, i, "AI disabled.")
-	case "clear":
-		a.eng.ClearAll()
-		respond(s, i, "AI history cleared.")
+		respondPrivate(s, i, a.statusText())
 	case "model":
 		if strings.TrimSpace(model) == "" {
 			respond(s, i, "usage: /ai model name:<model>")
@@ -451,30 +433,25 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 
 func (a *App) statusText() string {
 	cfg := a.snapshot()
-	state := "off"
-	if cfg.AIEnabled {
-		state = "on"
-	}
 	st := a.eng.Status()
 	ollama := "not reachable"
-	installed := ""
+	model := cfg.AIModel
 	if st.Running {
 		ollama = "running (local)"
-		found := false
+		installed := false
 		for _, m := range st.Models {
 			if m == cfg.AIModel || strings.HasPrefix(m, cfg.AIModel+":") {
-				found = true
+				installed = true
 				break
 			}
 		}
-		if found {
-			installed = ", installed"
+		if installed {
+			model += " (installed)"
 		} else {
-			installed = ", not installed"
+			model += " (not installed)"
 		}
 	}
-	return fmt.Sprintf("AI is %s. Ollama is %s. model: %s%s. think: %v.",
-		state, ollama, cfg.AIModel, installed, cfg.AIThink)
+	return fmt.Sprintf("model: %s. Ollama is %s.", model, ollama)
 }
 
 func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -491,22 +468,16 @@ func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	switch action {
 	case "status":
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, a.statusText(), m.Reference())
-	case "on", "true":
-		a.mu.Lock()
-		a.cfg.AIEnabled = true
-		a.mu.Unlock()
-		a.persist()
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI enabled.", m.Reference())
-	case "off", "false":
-		a.mu.Lock()
-		a.cfg.AIEnabled = false
-		a.mu.Unlock()
-		a.persist()
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI disabled.", m.Reference())
-	case "clear", "forget":
-		a.eng.ClearAll()
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI history cleared.", m.Reference())
+		if m.GuildID == "" {
+			_, _ = s.ChannelMessageSendReply(m.ChannelID, a.statusText(), m.Reference())
+			return
+		}
+		dm, err := s.UserChannelCreate(m.Author.ID)
+		if err != nil {
+			log.Printf("dm open: %v", err)
+			return
+		}
+		_, _ = s.ChannelMessageSend(dm.ID, a.statusText())
 	case "model":
 		name := ""
 		if strings.HasPrefix(action, "model:") {
@@ -544,14 +515,14 @@ func (a *App) handlePrefixAI(s *discordgo.Session, m *discordgo.MessageCreate) {
 			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI model set to "+name+".", m.Reference())
 			return
 		}
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "usage: /ai status | on | off | clear | model <name>", m.Reference())
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "usage: /ai status | model <name>", m.Reference())
 	}
 }
 
 func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 	text := "mention me, write my name, reply to me or use /ask <question> — I answer with local AI.\n" +
 		"/ask <question> — ask me\n" +
-		"/ai status|on|off|clear|model <name> — owner/admin controls"
+		"/ai status|model <name> — owner/admin controls"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
 
@@ -660,6 +631,16 @@ func validModelName(s string) bool {
 		return false
 	}
 	return true
+}
+
+func respondPrivate(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: msg, Flags: discordgo.MessageFlagsEphemeral},
+	})
+	if err != nil {
+		log.Printf("respond: %v", err)
+	}
 }
 
 func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
