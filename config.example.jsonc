@@ -14,5 +14,7 @@
   "ai_think": false,
   "random_channels": [],
   "random_chance": 0.02,
-  "gamebox": false
+  "gamebox": false,
+  "events_enabled": true,
+  "event_chance": 0.02
 }

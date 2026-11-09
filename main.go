@@ -23,16 +23,19 @@ import (
 
 	"github.com/Matko802/ralsei/internal/ai"
 	"github.com/Matko802/ralsei/internal/config"
+	"github.com/Matko802/ralsei/internal/events"
 	"github.com/Matko802/ralsei/internal/gamebox"
 )
 
 type App struct {
-	mu      sync.Mutex
-	cfg     *config.Config
-	cfgPath string
-	eng     *ai.Engine
-	gb      *gamebox.Renderer
-	dg      *discordgo.Session
+	mu        sync.Mutex
+	eventMu   sync.Mutex
+	lastEvent map[string]time.Time
+	cfg       *config.Config
+	cfgPath   string
+	eng       *ai.Engine
+	gb        *gamebox.Renderer
+	dg        *discordgo.Session
 }
 
 func main() {
@@ -48,7 +51,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	app := &App{cfg: cfg, cfgPath: path}
+	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time)}
 	app.eng = ai.New(ai.Config{
 		Host:        cfg.OllamaHost,
 		Model:       cfg.AIModel,
@@ -264,6 +267,31 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "event",
+			Description: "toggle mini events",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "value",
+					Description: "on or off, leave empty to show the current setting",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "on", Value: "on"},
+						{Name: "off", Value: "off"},
+					},
+				},
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -398,6 +426,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		a.handlePrefixForget(s, m)
 		return
 	}
+	if lowerRaw == "/event" || strings.HasPrefix(lowerRaw, "/event ") {
+		a.handlePrefixEvent(s, m)
+		return
+	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
 		a.sendHelp(s, m)
 		return
@@ -430,6 +462,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			prompt = "hello"
 		}
 	default:
+		if a.eventHit(cfg, m.ChannelID) {
+			a.triggerEvent(s, m)
+			return
+		}
 		if !a.randomHit(cfg, m.ChannelID) {
 			return
 		}
@@ -527,6 +563,113 @@ func (a *App) sendReply(s *discordgo.Session, channelID string, ref *discordgo.M
 	}
 }
 
+func (a *App) eventHit(cfg *config.Config, channelID string) bool {
+	if !cfg.EventsEnabled {
+		return false
+	}
+	cid, err := u64(channelID)
+	if err != nil {
+		return false
+	}
+	allowed := false
+	for _, id := range cfg.RandomChannels {
+		if id == cid {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return false
+	}
+	a.eventMu.Lock()
+	defer a.eventMu.Unlock()
+	if time.Since(a.lastEvent[channelID]) < 10*time.Minute {
+		return false
+	}
+	chance := cfg.EventChance
+	if chance <= 0 {
+		chance = 0.02
+	}
+	if chance > 1 {
+		chance = 1
+	}
+	if rand.Float64() < chance {
+		a.lastEvent[channelID] = time.Now()
+		return true
+	}
+	return false
+}
+
+func buttonStyle(name string) discordgo.ButtonStyle {
+	switch name {
+	case "success":
+		return discordgo.SuccessButton
+	case "danger":
+		return discordgo.DangerButton
+	case "primary":
+		return discordgo.PrimaryButton
+	default:
+		return discordgo.SecondaryButton
+	}
+}
+
+func (a *App) eventComponents(index int, ev events.Event) []discordgo.MessageComponent {
+	row := make([]discordgo.MessageComponent, 0, len(ev.Actions))
+	for j, act := range ev.Actions {
+		row = append(row, discordgo.Button{
+			Label:    act.Label,
+			Style:    buttonStyle(act.Style),
+			CustomID: fmt.Sprintf("evt:%d:%d", index, j),
+		})
+	}
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: row}}
+}
+
+func (a *App) triggerEvent(s *discordgo.Session, m *discordgo.MessageCreate) {
+	all := events.All()
+	idx := rand.IntN(len(all))
+	ev := all[idx]
+	log.Printf("mini event %d in %s", idx, m.ChannelID)
+
+	msg := &discordgo.MessageSend{
+		Components: a.eventComponents(idx, ev),
+		Reference:  m.Reference(),
+	}
+	cfg := a.snapshot()
+	if cfg.Gamebox && a.gb != nil {
+		if img, err := a.gb.Render(ev.Title + "\n" + ev.Text); err == nil {
+			msg.Files = []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}}
+		}
+	}
+	if len(msg.Files) == 0 {
+		msg.Content = "**" + ev.Title + "**\n" + ev.Text
+	}
+	if _, err := s.ChannelMessageSendComplex(m.ChannelID, msg); err != nil {
+		log.Printf("event send: %v", err)
+	}
+}
+
+func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	parts := strings.Split(i.MessageComponentData().CustomID, ":")
+	if len(parts) != 3 || parts[0] != "evt" {
+		return
+	}
+	evIdx, err1 := strconv.Atoi(parts[1])
+	actIdx, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil {
+		return
+	}
+	all := events.All()
+	if evIdx < 0 || evIdx >= len(all) {
+		return
+	}
+	ev := all[evIdx]
+	if actIdx < 0 || actIdx >= len(ev.Actions) {
+		return
+	}
+	respond(s, i, ev.Actions[actIdx].Text)
+}
+
 func (a *App) randomHit(cfg *config.Config, channelID string) bool {
 	cid, err := u64(channelID)
 	if err != nil {
@@ -571,6 +714,10 @@ func (a *App) startTyping(channel string) chan struct{} {
 }
 
 func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type == discordgo.InteractionMessageComponent {
+		a.handleComponent(s, i)
+		return
+	}
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
@@ -597,6 +744,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "forget" {
 		a.handleForgetCommand(s, i)
+		return
+	}
+	if data.Name == "event" {
+		a.handleEventCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -1043,6 +1194,58 @@ func (a *App) handlePrefixForget(s *discordgo.Session, m *discordgo.MessageCreat
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI memory cleared for this channel.", m.Reference())
 }
 
+func (a *App) setEvent(text string) string {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "":
+		return fmt.Sprintf("mini events are %v.", a.snapshot().EventsEnabled)
+	case "on", "true", "1", "yes":
+		a.mu.Lock()
+		a.cfg.EventsEnabled = true
+		a.mu.Unlock()
+		a.persist()
+		return "mini events enabled."
+	case "off", "false", "0", "no":
+		a.mu.Lock()
+		a.cfg.EventsEnabled = false
+		a.mu.Unlock()
+		a.persist()
+		return "mini events disabled."
+	default:
+		return "usage: /event on|off"
+	}
+}
+
+func (a *App) handleEventCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change mini events.")
+		return
+	}
+	var value string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "value" {
+			value = o.StringValue()
+		}
+	}
+	respond(s, i, a.setEvent(value))
+}
+
+func (a *App) handlePrefixEvent(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change mini events.", m.Reference())
+		return
+	}
+	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/event"):])
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setEvent(value), m.Reference())
+}
+
 func (a *App) watchConfig(path, token string) {
 	lastMod := time.Time{}
 	lastSize := int64(-1)
@@ -1087,6 +1290,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/chance <0-100> — owner/admin controls, random reply percent\n" +
 		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
 		"/forget [all] — owner/admin controls, clear AI memory\n" +
+		"/event on|off — owner/admin controls, mini events\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }

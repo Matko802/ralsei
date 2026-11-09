@@ -20,6 +20,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - `/chance <0-100>` for owner, admins and managers — random reply chance
 - `/gamebox on|off` for owner, admins and managers — replies as a Deltarune-style black box image with a white border, the bot avatar on the left (monochrome, 2x contrast) and in-game font
 - `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
+- Mini events in random channels (default 2%, 10 min cooldown): a scene appears with ACT buttons for choices
 - Live config reload: editing `~/.config/ralsei/config.jsonc` applies within a couple of seconds, no restart
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`
 - Comments and trailing commas allowed in config (JSONC)
@@ -64,6 +65,8 @@ The config path can also be set with `RALSEI_CONFIG`. Default: `~/.config/ralsei
 ```
 
 `ai_think` enables Ollama thinking output for models that support it. Models without thinking support are retried automatically without it.
+
+`events_enabled` and `event_chance` control mini events (default on, 2%).
 
 `random_channels` holds channel IDs where the bot may answer random messages without being mentioned. `random_chance` is the chance per message (default `0.02`, i.e. 2%). Enable Discord developer mode and use "Copy Channel ID" to get the IDs.
 

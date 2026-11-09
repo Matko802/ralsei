@@ -25,6 +25,8 @@ type Config struct {
 	Gamebox        bool     `json:"gamebox"`
 	RandomChannels []uint64 `json:"random_channels"`
 	RandomChance   float64  `json:"random_chance"`
+	EventsEnabled  bool     `json:"events_enabled"`
+	EventChance    float64  `json:"event_chance"`
 }
 
 func Path() string {
@@ -133,6 +135,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.RandomChance > 1 {
 		cfg.RandomChance = 1
+	}
+	if cfg.EventChance <= 0 {
+		cfg.EventChance = 0.02
+	}
+	if cfg.EventChance > 1 {
+		cfg.EventChance = 1
 	}
 	return cfg, nil
 }
