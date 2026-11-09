@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -178,6 +179,27 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "chance",
+			Description: "set the random reply chance in percent",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "percent",
+					Description: "0 to 100, leave empty to show the current chance",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+				},
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -298,6 +320,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	if lowerRaw == "/think" || strings.HasPrefix(lowerRaw, "/think ") {
 		a.handlePrefixThink(s, m)
+		return
+	}
+	if lowerRaw == "/chance" || strings.HasPrefix(lowerRaw, "/chance ") {
+		a.handlePrefixChance(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -458,6 +484,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "think" {
 		a.handleThinkCommand(s, i)
+		return
+	}
+	if data.Name == "chance" {
+		a.handleChanceCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -701,6 +731,57 @@ func (a *App) handlePrefixThink(s *discordgo.Session, m *discordgo.MessageCreate
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setThink(value), m.Reference())
 }
 
+func pctText(v float64) string {
+	return strconv.FormatFloat(v*100, 'f', -1, 64) + "%"
+}
+
+func (a *App) setChance(text string) string {
+	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), "%"))
+	if text == "" {
+		return "random reply chance is " + pctText(a.snapshot().RandomChance) + "."
+	}
+	v, err := strconv.ParseFloat(text, 64)
+	if err != nil || v < 0 || v > 100 {
+		return "usage: /chance <0-100>"
+	}
+	a.mu.Lock()
+	a.cfg.RandomChance = v / 100
+	a.mu.Unlock()
+	a.persist()
+	return "random reply chance set to " + pctText(v/100) + "."
+}
+
+func (a *App) handleChanceCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change the chance.")
+		return
+	}
+	var value string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "percent" {
+			value = o.StringValue()
+		}
+	}
+	respond(s, i, a.setChance(value))
+}
+
+func (a *App) handlePrefixChance(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change the chance.", m.Reference())
+		return
+	}
+	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/chance"):])
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setChance(value), m.Reference())
+}
+
 func (a *App) watchConfig(path, token string) {
 	lastMod := time.Time{}
 	lastSize := int64(-1)
@@ -742,6 +823,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/ai status|model <name> — owner/admin controls\n" +
 		"/personality <text> — owner/admin controls, reset restores default\n" +
 		"/think true|false — owner/admin controls\n" +
+		"/chance <0-100> — owner/admin controls, random reply percent\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
