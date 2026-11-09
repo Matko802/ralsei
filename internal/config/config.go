@@ -30,9 +30,6 @@ type Config struct {
 	TTSEnabled     bool     `json:"tts_enabled"`
 	TTSBinary      string   `json:"tts_binary"`
 	TTSVoice       string   `json:"tts_voice"`
-	VMName         string   `json:"vm_name"`
-	VMURI          string   `json:"vm_uri"`
-	TerminalFont   string   `json:"terminal_font"`
 }
 
 func Path() string {
@@ -153,15 +150,6 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.TTSVoice == "" {
 		cfg.TTSVoice = "/opt/piper/voice.onnx"
-	}
-	if cfg.VMName == "" {
-		cfg.VMName = "artix"
-	}
-	if cfg.VMURI == "" {
-		cfg.VMURI = "qemu:///system"
-	}
-	if cfg.TerminalFont == "" {
-		cfg.TerminalFont = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 	}
 	return cfg, nil
 }

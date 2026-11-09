@@ -28,8 +28,6 @@ import (
 	"github.com/Matko802/ralsei/internal/config"
 	"github.com/Matko802/ralsei/internal/events"
 	"github.com/Matko802/ralsei/internal/gamebox"
-	"github.com/Matko802/ralsei/internal/term"
-	"github.com/Matko802/ralsei/internal/vm"
 )
 
 type App struct {
@@ -47,11 +45,6 @@ type App struct {
 	voice     *discordgo.VoiceConnection
 	voiceCh   string
 	soundQ    chan audio.Sound
-	termMu    sync.Mutex
-	termMode  map[string]bool
-	termMsg   map[string]string
-	term      *term.Renderer
-	vmc       vm.Client
 }
 
 func main() {
@@ -67,9 +60,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState), soundQ: make(chan audio.Sound, 16), termMode: make(map[string]bool), termMsg: make(map[string]string)}
-	app.vmc = vm.Client{URI: cfg.VMURI, Name: cfg.VMName}
-	app.term = loadTerm(cfg.TerminalFont)
+	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState), soundQ: make(chan audio.Sound, 16)}
 	app.eng = ai.New(ai.Config{
 		Host:        cfg.OllamaHost,
 		Model:       cfg.AIModel,
@@ -344,7 +335,6 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 					Choices: []*discordgo.ApplicationCommandOptionChoice{
 						{Name: "join", Value: "join"},
 						{Name: "leave", Value: "leave"},
-						{Name: "terminalmode", Value: "terminalmode"},
 					},
 				},
 			},
@@ -371,48 +361,6 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 						{Name: "on", Value: "on"},
 						{Name: "off", Value: "off"},
 					},
-				},
-			},
-		},
-		{
-			Name:        "terminalmode",
-			Description: "toggle the AI terminal in the artix VM",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "value",
-					Description: "on or off",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "on", Value: "on"},
-						{Name: "off", Value: "off"},
-					},
-				},
-			},
-		},
-		{
-			Name:        "term",
-			Description: "run a command in the artix VM",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "command",
-					Description: "command to run",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    true,
 				},
 			},
 		},
@@ -566,14 +514,6 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		a.handlePrefixTTS(s, m)
 		return
 	}
-	if lowerRaw == "/terminalmode" || strings.HasPrefix(lowerRaw, "/terminalmode ") {
-		a.handlePrefixTerminalMode(s, m)
-		return
-	}
-	if lowerRaw == "/term" || strings.HasPrefix(lowerRaw, "/term ") {
-		a.handlePrefixTerm(s, m)
-		return
-	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
 		a.sendHelp(s, m)
 		return
@@ -604,13 +544,6 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 
-	if a.terminalOn(m.ChannelID) {
-		uid, err := u64(m.Author.ID)
-		if err == nil && a.isElevated(uid) && !strings.HasPrefix(strings.TrimSpace(content), "/") {
-			go a.runTerminalPrompt(m.ChannelID, uid, strings.TrimSpace(content))
-			return
-		}
-	}
 	repliedToBot := a.repliedToBot(s, m, id)
 
 	var prompt string
@@ -1260,14 +1193,6 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		a.handleTTSCommand(s, i)
 		return
 	}
-	if data.Name == "terminalmode" {
-		a.handleTerminalModeCommand(s, i)
-		return
-	}
-	if data.Name == "term" {
-		a.handleTermCommand(s, i)
-		return
-	}
 	if data.Name != "ai" {
 		return
 	}
@@ -1869,228 +1794,6 @@ func (a *App) handlePrefixTTS(s *discordgo.Session, m *discordgo.MessageCreate) 
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setTTS(value), m.Reference())
 }
 
-const terminalSystem = `You are Ralsei, typing into a bash terminal inside your Artix Linux VM. Turn the user's request into exactly one bash command. Reply with the command only. No explanations, no markdown, no code fences, no backticks. Choose the closest safe command if the request is ambiguous.`
-
-func cleanCommand(s string) string {
-	s = strings.ReplaceAll(s, "```bash", "")
-	s = strings.ReplaceAll(s, "```sh", "")
-	s = strings.ReplaceAll(s, "```", "")
-	s = strings.ReplaceAll(s, "`", "")
-	for _, ln := range strings.Split(s, "\n") {
-		ln = strings.TrimSpace(ln)
-		ln = strings.TrimPrefix(ln, "$ ")
-		if ln == "" {
-			continue
-		}
-		r := []rune(ln)
-		if len(r) > 400 {
-			ln = string(r[:400])
-		}
-		return ln
-	}
-	return ""
-}
-
-func (a *App) terminalOn(channelID string) bool {
-	a.termMu.Lock()
-	defer a.termMu.Unlock()
-	return a.termMode[channelID]
-}
-
-func (a *App) presentTerminal(channelID, command, output string, exit int) {
-	if a.term == nil {
-		return
-	}
-	a.voiceMu.Lock()
-	vcCh := a.voiceCh
-	a.voiceMu.Unlock()
-	if vcCh != "" {
-		channelID = vcCh
-	}
-	if exit != 0 {
-		output += fmt.Sprintf("\n[exit %d]", exit)
-	}
-	if strings.TrimSpace(output) == "" {
-		output = " "
-	}
-	img, err := a.term.Render("artix VM - ralsei@artix", command, output)
-	if err != nil {
-		log.Printf("terminal render: %v", err)
-		return
-	}
-	a.termMu.Lock()
-	msgID := a.termMsg[channelID]
-	a.termMu.Unlock()
-	if msgID != "" {
-		empty := ""
-		att := []*discordgo.MessageAttachment{}
-		_, err := a.dg.ChannelMessageEditComplex(&discordgo.MessageEdit{
-			Channel:     channelID,
-			ID:          msgID,
-			Content:     &empty,
-			Attachments: &att,
-			Files:       []*discordgo.File{{Name: "terminal.png", Reader: bytes.NewReader(img)}},
-		})
-		if err == nil {
-			return
-		}
-		log.Printf("terminal edit: %v", err)
-	}
-	msg, err := a.dg.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Files: []*discordgo.File{{Name: "terminal.png", Reader: bytes.NewReader(img)}},
-	})
-	if err != nil {
-		log.Printf("terminal send: %v", err)
-		return
-	}
-	a.termMu.Lock()
-	a.termMsg[channelID] = msg.ID
-	a.termMu.Unlock()
-}
-
-func (a *App) runVMCommand(command string) (string, int) {
-	out, code, err := a.vmc.Exec(command, 60*time.Second)
-	if err != nil {
-		return err.Error(), -1
-	}
-	return out, code
-}
-
-func (a *App) runTerminalPrompt(channelID string, userID uint64, text string) {
-	cmd, err := a.eng.Complete(terminalSystem, text, 0.2)
-	if err != nil {
-		log.Printf("terminal ai: %v", err)
-		return
-	}
-	cmd = cleanCommand(cmd)
-	if cmd == "" {
-		return
-	}
-	log.Printf("terminal command from %d: %s", userID, cmd)
-	a.presentTerminal(channelID, cmd, "(running...)", 0)
-	out, code := a.runVMCommand(cmd)
-	a.presentTerminal(channelID, cmd, out, code)
-	a.speak(out)
-}
-
-func (a *App) setTerminalMode(channelID string, on bool) string {
-	if on && a.term == nil {
-		return "terminal renderer is not available."
-	}
-	a.termMu.Lock()
-	a.termMode[channelID] = on
-	a.termMu.Unlock()
-	if on {
-		a.presentTerminal(channelID, "", "Terminal mode enabled.\nMessages in this channel become commands and run inside the artix VM.", 0)
-		a.speak("Terminal mode is ready.")
-		return "terminal mode enabled."
-	}
-	return "terminal mode disabled."
-}
-
-func (a *App) handleTerminalModeCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	caller := ""
-	if i.Member != nil && i.Member.User != nil {
-		caller = i.Member.User.ID
-	} else if i.User != nil {
-		caller = i.User.ID
-	}
-	uid, err := u64(caller)
-	if err != nil || !a.isElevated(uid) {
-		respond(s, i, "you are not allowed to change terminal mode.")
-		return
-	}
-	value := "on"
-	for _, o := range i.ApplicationCommandData().Options {
-		if o.Name == "value" {
-			value = o.StringValue()
-		}
-	}
-	on := value != "off"
-	respond(s, i, a.setTerminalMode(i.ChannelID, on))
-}
-
-func (a *App) handlePrefixTerminalMode(s *discordgo.Session, m *discordgo.MessageCreate) {
-	uid, err := u64(m.Author.ID)
-	if err != nil || !a.isElevated(uid) {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change terminal mode.", m.Reference())
-		return
-	}
-	arg := strings.ToLower(strings.TrimSpace(strings.TrimSpace(m.Content)[len("/terminalmode"):]))
-	on := arg != "off" && arg != "false" && arg != "0"
-	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setTerminalMode(m.ChannelID, on), m.Reference())
-}
-
-func (a *App) handleTermCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	caller := ""
-	if i.Member != nil && i.Member.User != nil {
-		caller = i.Member.User.ID
-	} else if i.User != nil {
-		caller = i.User.ID
-	}
-	uid, err := u64(caller)
-	if err != nil || !a.isElevated(uid) {
-		respond(s, i, "you are not allowed to run terminal commands.")
-		return
-	}
-	cmd := ""
-	for _, o := range i.ApplicationCommandData().Options {
-		if o.Name == "command" {
-			cmd = o.StringValue()
-		}
-	}
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		respond(s, i, "usage: /term command:<command>")
-		return
-	}
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	}); err != nil {
-		log.Printf("term defer: %v", err)
-		return
-	}
-	go func() {
-		out, code := a.runVMCommand(cmd)
-		if code != 0 {
-			out += fmt.Sprintf("\n[exit %d]", code)
-		}
-		if a.term == nil {
-			msg := "terminal renderer unavailable."
-			_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
-			return
-		}
-		img, err := a.term.Render("artix VM - ralsei@artix", cmd, out)
-		if err != nil {
-			msg := "render failed."
-			_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
-			return
-		}
-		att := []*discordgo.MessageAttachment{}
-		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Attachments: &att,
-			Files:       []*discordgo.File{{Name: "terminal.png", Reader: bytes.NewReader(img)}},
-		})
-	}()
-}
-
-func (a *App) handlePrefixTerm(s *discordgo.Session, m *discordgo.MessageCreate) {
-	uid, err := u64(m.Author.ID)
-	if err != nil || !a.isElevated(uid) {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to run terminal commands.", m.Reference())
-		return
-	}
-	cmd := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/term"):])
-	if cmd == "" {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "usage: /term <command>", m.Reference())
-		return
-	}
-	go func() {
-		out, code := a.runVMCommand(cmd)
-		a.presentTerminal(m.ChannelID, cmd, out, code)
-	}()
-}
-
 func (a *App) joinVoice(guildID, channelID string) error {
 	a.voiceMu.Lock()
 	if a.voice != nil {
@@ -2204,35 +1907,6 @@ func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 		respondPrivate(s, i, "join a voice channel first, then run /vc join.")
 		return
 	}
-	if action == "terminalmode" {
-		uid, err := u64(caller)
-		if err != nil || !a.isElevated(uid) {
-			respondPrivate(s, i, "you are not allowed to share the terminal.")
-			return
-		}
-		a.termMu.Lock()
-		a.termMode[i.ChannelID] = true
-		a.termMu.Unlock()
-		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-		}); err != nil {
-			log.Printf("vc defer: %v", err)
-			return
-		}
-		go func() {
-			if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
-				msg := "could not join voice: " + err.Error()
-				_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
-				return
-			}
-			a.presentTerminal(vs.ChannelID, "", "Terminal mode is on.\nMessages in this text channel become commands in the artix VM. I will share the screen here.", 0)
-			a.speak("Terminal mode is ready. I will share my screen here.")
-			msg := "terminal mode is on, sharing the terminal in the voice channel chat."
-			_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
-		}()
-		return
-	}
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
@@ -2274,15 +1948,6 @@ func (a *App) handlePrefixVc(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 		a.dmUser(s, m.Author.ID, "joined <#"+vs.ChannelID+">.")
 	}()
-}
-
-func loadTerm(path string) *term.Renderer {
-	r, err := term.Load(path)
-	if err != nil {
-		log.Printf("terminal renderer unavailable: %v", err)
-		return nil
-	}
-	return r
 }
 
 func (a *App) watchConfig(path, token string) {
@@ -2334,8 +1999,6 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/vc join|leave — join your voice channel for battle sounds\n" +
 		"say \"ralsei come here\" to make him join your voice channel, \"ralsei leave\" to make him go\n" +
 		"/tts on|off — owner/admin controls, speak replies in voice\n" +
-		"/terminalmode on|off — owner/admin controls, AI terminal in the artix VM\n" +
-		"/term <command> — owner/admin controls, run a command in the artix VM\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
