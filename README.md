@@ -8,6 +8,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 
 - Talks through a local Ollama server (`/api/generate`)
 - Replies when mentioned, when its name (any case) appears in a message, when someone replies to its message, or via `/ask`
+- In DMs he answers every message directly
 - Keeps per-channel conversation history (20 messages, 6000 chars)
 - Long replies are split into up to 4 Discord messages
 - `/ask text:<question>` slash command and `/ask <question>` prefix command

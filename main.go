@@ -120,6 +120,11 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 	if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", cmds); err != nil {
 		log.Printf("command register: %v", err)
 	}
+	for _, g := range e.Guilds {
+		if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, g.ID, cmds); err != nil {
+			log.Printf("command register guild %s: %v", g.ID, err)
+		}
+	}
 }
 
 func (a *App) snapshot() *config.Config {
