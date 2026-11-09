@@ -31,20 +31,22 @@ import (
 )
 
 type App struct {
-	mu        sync.Mutex
-	eventMu   sync.Mutex
-	battleMu  sync.Mutex
-	voiceMu   sync.Mutex
-	lastEvent map[string]time.Time
-	battles   map[string]*battleState
-	cfg       *config.Config
-	cfgPath   string
-	eng       *ai.Engine
-	gb        *gamebox.Renderer
-	dg        *discordgo.Session
-	voice     *discordgo.VoiceConnection
-	voiceCh   string
-	soundQ    chan audio.Sound
+	mu         sync.Mutex
+	eventMu    sync.Mutex
+	battleMu   sync.Mutex
+	voiceMu    sync.Mutex
+	lastEvent  map[string]time.Time
+	battles    map[string]*battleState
+	cfg        *config.Config
+	cfgPath    string
+	eng        *ai.Engine
+	gb         *gamebox.Renderer
+	dg         *discordgo.Session
+	voice      *discordgo.VoiceConnection
+	voiceCh    string
+	soundQ     chan audio.Sound
+	ambMu      sync.Mutex
+	lastActive map[string]time.Time
 }
 
 func main() {
@@ -60,7 +62,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState), soundQ: make(chan audio.Sound, 16)}
+	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState), soundQ: make(chan audio.Sound, 16), lastActive: make(map[string]time.Time)}
 	app.eng = ai.New(ai.Config{
 		Host:        cfg.OllamaHost,
 		Model:       cfg.AIModel,
@@ -94,6 +96,7 @@ func main() {
 	}
 	go app.watchConfig(path, cfg.DiscordToken)
 	go app.soundWorker()
+	go app.ambientLoop()
 
 	log.Println("ralsei is running, press ctrl+c to exit")
 	stop := make(chan os.Signal, 1)
@@ -109,37 +112,6 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 	go a.warmModel()
 
 	cmds := []*discordgo.ApplicationCommand{
-		{
-			Name:        "ai",
-			Description: "control the AI",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-				discordgo.InteractionContextBotDM,
-				discordgo.InteractionContextPrivateChannel,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "action",
-					Description: "what to do with the AI",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    true,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "status", Value: "status"},
-						{Name: "model", Value: "model"},
-					},
-				},
-				{
-					Name:        "name",
-					Description: "ollama model name, used with action=model",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-				},
-			},
-		},
 		{
 			Name:        "ask",
 			Description: "ask the AI something",
@@ -158,98 +130,6 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 					Description: "your question",
 					Type:        discordgo.ApplicationCommandOptionString,
 					Required:    true,
-				},
-			},
-		},
-		{
-			Name:        "personality",
-			Description: "change how the AI behaves",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-				discordgo.InteractionContextBotDM,
-				discordgo.InteractionContextPrivateChannel,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "text",
-					Description: "new personality text, or reset to restore the default",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-				},
-			},
-		},
-		{
-			Name:        "think",
-			Description: "turn AI thinking on or off",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-				discordgo.InteractionContextBotDM,
-				discordgo.InteractionContextPrivateChannel,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "value",
-					Description: "true or false, leave empty to show the current setting",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "true", Value: "true"},
-						{Name: "false", Value: "false"},
-					},
-				},
-			},
-		},
-		{
-			Name:        "chance",
-			Description: "set the random reply chance in percent",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-				discordgo.InteractionContextBotDM,
-				discordgo.InteractionContextPrivateChannel,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "percent",
-					Description: "0 to 100, leave empty to show the current chance",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-				},
-			},
-		},
-		{
-			Name:        "gamebox",
-			Description: "toggle Deltarune-style image replies",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-				discordgo.InteractionContextBotDM,
-				discordgo.InteractionContextPrivateChannel,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "value",
-					Description: "on or off, leave empty to show the current setting",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "on", Value: "on"},
-						{Name: "off", Value: "off"},
-					},
 				},
 			},
 		},
@@ -274,31 +154,6 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 					Choices: []*discordgo.ApplicationCommandOptionChoice{
 						{Name: "channel", Value: "channel"},
 						{Name: "all", Value: "all"},
-					},
-				},
-			},
-		},
-		{
-			Name:        "event",
-			Description: "toggle mini events",
-			Contexts: &[]discordgo.InteractionContextType{
-				discordgo.InteractionContextGuild,
-				discordgo.InteractionContextBotDM,
-				discordgo.InteractionContextPrivateChannel,
-			},
-			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
-				discordgo.ApplicationIntegrationGuildInstall,
-				discordgo.ApplicationIntegrationUserInstall,
-			},
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "value",
-					Description: "on or off, leave empty to show the current setting",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    false,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "on", Value: "on"},
-						{Name: "off", Value: "off"},
 					},
 				},
 			},
@@ -340,8 +195,8 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 			},
 		},
 		{
-			Name:        "tts",
-			Description: "toggle text to speech in voice",
+			Name:        "settings",
+			Description: "change bot settings",
 			Contexts: &[]discordgo.InteractionContextType{
 				discordgo.InteractionContextGuild,
 				discordgo.InteractionContextBotDM,
@@ -353,14 +208,29 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 			},
 			Options: []*discordgo.ApplicationCommandOption{
 				{
+					Name:        "setting",
+					Description: "what to change",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    true,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "status", Value: "status"},
+						{Name: "model", Value: "model"},
+						{Name: "personality", Value: "personality"},
+						{Name: "think", Value: "think"},
+						{Name: "chance", Value: "chance"},
+						{Name: "gamebox", Value: "gamebox"},
+						{Name: "tts", Value: "tts"},
+						{Name: "events", Value: "events"},
+						{Name: "ambient", Value: "ambient"},
+						{Name: "ambient chance", Value: "ambient_chance"},
+						{Name: "ambient interval", Value: "ambient_interval"},
+					},
+				},
+				{
 					Name:        "value",
-					Description: "on or off, leave empty to show the current setting",
+					Description: "new value, empty to show current",
 					Type:        discordgo.ApplicationCommandOptionString,
 					Required:    false,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "on", Value: "on"},
-						{Name: "off", Value: "off"},
-					},
 				},
 			},
 		},
@@ -471,35 +341,16 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if err == nil && a.isBlocked(uid) {
 		return
 	}
+	a.markActive(m.ChannelID)
 
 	trimmedRaw := strings.TrimSpace(m.Content)
 	lowerRaw := strings.ToLower(trimmedRaw)
-	if lowerRaw == "/ai" || strings.HasPrefix(lowerRaw, "/ai ") {
-		a.handlePrefixAI(s, m)
-		return
-	}
-	if lowerRaw == "/personality" || strings.HasPrefix(lowerRaw, "/personality ") {
-		a.handlePrefixPersonality(s, m)
-		return
-	}
-	if lowerRaw == "/think" || strings.HasPrefix(lowerRaw, "/think ") {
-		a.handlePrefixThink(s, m)
-		return
-	}
-	if lowerRaw == "/chance" || strings.HasPrefix(lowerRaw, "/chance ") {
-		a.handlePrefixChance(s, m)
-		return
-	}
-	if lowerRaw == "/gamebox" || strings.HasPrefix(lowerRaw, "/gamebox ") {
-		a.handlePrefixGamebox(s, m)
+	if lowerRaw == "/settings" || strings.HasPrefix(lowerRaw, "/settings ") {
+		a.handlePrefixSettings(s, m)
 		return
 	}
 	if lowerRaw == "/forget" || strings.HasPrefix(lowerRaw, "/forget ") {
 		a.handlePrefixForget(s, m)
-		return
-	}
-	if lowerRaw == "/event" || strings.HasPrefix(lowerRaw, "/event ") {
-		a.handlePrefixEvent(s, m)
 		return
 	}
 	if lowerRaw == "/act" || strings.HasPrefix(lowerRaw, "/act ") {
@@ -508,10 +359,6 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	if lowerRaw == "/vc" || strings.HasPrefix(lowerRaw, "/vc ") {
 		a.handlePrefixVc(s, m)
-		return
-	}
-	if lowerRaw == "/tts" || strings.HasPrefix(lowerRaw, "/tts ") {
-		a.handlePrefixTTS(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -1157,28 +1004,12 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		a.handleAskCommand(s, i)
 		return
 	}
-	if data.Name == "personality" {
-		a.handlePersonalityCommand(s, i)
-		return
-	}
-	if data.Name == "think" {
-		a.handleThinkCommand(s, i)
-		return
-	}
-	if data.Name == "chance" {
-		a.handleChanceCommand(s, i)
-		return
-	}
-	if data.Name == "gamebox" {
-		a.handleGameboxCommand(s, i)
-		return
-	}
 	if data.Name == "forget" {
 		a.handleForgetCommand(s, i)
 		return
 	}
-	if data.Name == "event" {
-		a.handleEventCommand(s, i)
+	if data.Name == "settings" {
+		a.handleSettingsCommand(s, i)
 		return
 	}
 	if data.Name == "act" {
@@ -1187,10 +1018,6 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "vc" {
 		a.handleVcCommand(s, i)
-		return
-	}
-	if data.Name == "tts" {
-		a.handleTTSCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -1794,6 +1621,198 @@ func (a *App) handlePrefixTTS(s *discordgo.Session, m *discordgo.MessageCreate) 
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setTTS(value), m.Reference())
 }
 
+const ambientSystem = `You are Ralsei from DELTARUNE, alone for a moment. Say one short line out of nowhere, in character, like a quiet thought or observation. One sentence. No questions. No emojis. No roleplay actions.`
+
+func (a *App) markActive(channelID string) {
+	a.ambMu.Lock()
+	a.lastActive[channelID] = time.Now()
+	a.ambMu.Unlock()
+}
+
+func (a *App) ambientLoop() {
+	for {
+		cfg := a.snapshot()
+		interval := cfg.AmbientInterval
+		if interval <= 0 {
+			interval = 30
+		}
+		time.Sleep(time.Duration(interval) * time.Second)
+		cfg = a.snapshot()
+		if !cfg.AmbientEnabled || len(cfg.RandomChannels) == 0 {
+			continue
+		}
+		ch := cfg.RandomChannels[rand.IntN(len(cfg.RandomChannels))]
+		channelID := fmt.Sprint(ch)
+		a.ambMu.Lock()
+		last := a.lastActive[channelID]
+		a.ambMu.Unlock()
+		if time.Since(last) < 90*time.Second {
+			continue
+		}
+		chance := cfg.AmbientChance
+		if chance <= 0 {
+			chance = 0.5
+		}
+		if chance > 1 {
+			chance = 1
+		}
+		if rand.Float64() >= chance {
+			continue
+		}
+		a.markActive(channelID)
+		line, err := a.eng.Complete(ambientSystem, "Say something.", 0.9)
+		if err != nil {
+			log.Printf("ambient: %v", err)
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		log.Printf("ambient line in %s", channelID)
+		a.sendReply(a.dg, channelID, nil, line)
+		a.speak(line)
+	}
+}
+
+func (a *App) setAmbient(text string) string {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "":
+		return fmt.Sprintf("ambient chatter is %v.", a.snapshot().AmbientEnabled)
+	case "on", "true", "1", "yes":
+		a.mu.Lock()
+		a.cfg.AmbientEnabled = true
+		a.mu.Unlock()
+		a.persist()
+		return "ambient chatter enabled."
+	case "off", "false", "0", "no":
+		a.mu.Lock()
+		a.cfg.AmbientEnabled = false
+		a.mu.Unlock()
+		a.persist()
+		return "ambient chatter disabled."
+	default:
+		return "usage: /settings ambient on|off"
+	}
+}
+
+func (a *App) setAmbientChance(text string) string {
+	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), "%"))
+	if text == "" {
+		return "ambient chance is " + pctText(a.snapshot().AmbientChance) + "."
+	}
+	v, err := strconv.ParseFloat(text, 64)
+	if err != nil || v < 0 || v > 100 {
+		return "usage: /settings ambient_chance <0-100>"
+	}
+	a.mu.Lock()
+	a.cfg.AmbientChance = v / 100
+	a.mu.Unlock()
+	a.persist()
+	return "ambient chance set to " + pctText(v/100) + "."
+}
+
+func (a *App) setAmbientInterval(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Sprintf("ambient interval is %d seconds.", a.snapshot().AmbientInterval)
+	}
+	v, err := strconv.Atoi(text)
+	if err != nil || v < 5 || v > 3600 {
+		return "usage: /settings ambient_interval <5-3600 seconds>"
+	}
+	a.mu.Lock()
+	a.cfg.AmbientInterval = v
+	a.mu.Unlock()
+	a.persist()
+	return fmt.Sprintf("ambient interval set to %d seconds.", v)
+}
+
+func (a *App) applySetting(key, value string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "status":
+		return a.statusText()
+	case "model":
+		v := strings.TrimSpace(value)
+		if v == "" {
+			return "current model: " + a.snapshot().AIModel
+		}
+		if !validModelName(v) {
+			return "invalid model name."
+		}
+		a.mu.Lock()
+		a.cfg.AIModel = v
+		a.mu.Unlock()
+		a.applyAIConfig()
+		go a.warmModel()
+		a.persist()
+		return "model set to " + v + "."
+	case "personality":
+		return a.setPersonality(value)
+	case "think":
+		return a.setThink(value)
+	case "chance":
+		return a.setChance(value)
+	case "gamebox":
+		return a.setGamebox(value)
+	case "tts":
+		return a.setTTS(value)
+	case "events":
+		return a.setEvent(value)
+	case "ambient":
+		return a.setAmbient(value)
+	case "ambient_chance":
+		return a.setAmbientChance(value)
+	case "ambient_interval":
+		return a.setAmbientInterval(value)
+	}
+	return "unknown setting."
+}
+
+func (a *App) handleSettingsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change settings.")
+		return
+	}
+	var key, value string
+	for _, o := range i.ApplicationCommandData().Options {
+		switch o.Name {
+		case "setting":
+			key = o.StringValue()
+		case "value":
+			value = o.StringValue()
+		}
+	}
+	if key == "status" {
+		respondPrivate(s, i, a.applySetting(key, value))
+		return
+	}
+	respond(s, i, a.applySetting(key, value))
+}
+
+func (a *App) handlePrefixSettings(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change settings.", m.Reference())
+		return
+	}
+	arg := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/settings"):])
+	key := arg
+	value := ""
+	if idx := strings.IndexAny(arg, " \t"); idx >= 0 {
+		key = arg[:idx]
+		value = strings.TrimSpace(arg[idx+1:])
+	}
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.applySetting(key, value), m.Reference())
+}
+
 func (a *App) joinVoice(guildID, channelID string) error {
 	a.voiceMu.Lock()
 	if a.voice != nil {
@@ -1988,17 +2007,11 @@ func (a *App) watchConfig(path, token string) {
 func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 	text := "mention me, write my name, reply to me or use /ask <question> — I answer with local AI.\n" +
 		"/ask <question> — ask me\n" +
-		"/ai status|model <name> — owner/admin controls\n" +
-		"/personality <text> — owner/admin controls, reset restores default\n" +
-		"/think true|false — owner/admin controls\n" +
-		"/chance <0-100> — owner/admin controls, random reply percent\n" +
-		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
+		"/settings status|model|personality|think|chance|gamebox|tts|events|ambient|ambient_chance|ambient_interval <value> — owner/admin controls\n" +
 		"/forget [all] — owner/admin controls, clear AI memory\n" +
-		"/event on|off — anyone, mini events\n" +
 		"/act — anyone, Deltarune battle: FIGHT (timing), ACT (mercy), MERCY (spare), FLEE (deletes message)\n" +
 		"/vc join|leave — join your voice channel for battle sounds\n" +
 		"say \"ralsei come here\" to make him join your voice channel, \"ralsei leave\" to make him go\n" +
-		"/tts on|off — owner/admin controls, speak replies in voice\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
@@ -2036,6 +2049,7 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		respond(s, i, "bad channel id.")
 		return
 	}
+	a.markActive(i.ChannelID)
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	}); err != nil {

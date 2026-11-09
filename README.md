@@ -13,16 +13,11 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - Long replies are split into up to 4 Discord messages
 - Shows Discord's typing indicator while generating, then posts the final text or gamebox image
 - `/ask text:<question>` slash command and `/ask <question>` text prefix command (Artixy-style)
-- `/ai status|model <name>` as slash or text prefix command, plus `/help`
 - Slash commands support guild, bot DM and private channel contexts, with guild and user install (same as Artixy)
-- `/personality <text>` for owner, admins and managers — changes `ai_prompt` live; `reset` restores the default
-- `/think true|false` for owner, admins and managers — toggles Ollama thinking output live
-- `/chance <0-100>` for owner, admins and managers — random reply chance
-- `/gamebox on|off` for owner, admins and managers — replies as a Deltarune-style black box image with a white border, the bot avatar on the left (monochrome, 2x contrast) and in-game font
+- `/settings setting:<status|model|personality|think|chance|gamebox|tts|events|ambient|ambient_chance|ambient_interval> value:<v>` — all bot settings in one organised command (owner/admins/managers)
+- Ambient chatter: 50% chance every 30s in random channels when nobody is talking to him
 - `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
-- `/event on|off` — anyone can toggle mini events
 - `/act` — anyone, opens a Deltarune battle window: FIGHT is a timing minigame (fast STRIKE = more damage, 2-6% TP), ACT builds Mercy, MERCY spares at 100% Mercy or tired (HP <= 50%), FLEE deletes the message, and a CONTINUE button appears when Ralsei is down
-- `/tts on|off` for owner, admins and managers — speaks AI replies in the voice channel using the local Piper voice (en_US-lessac medium); parenthesised actions are skipped, only spoken lines are read
 - Voice: `/vc join|leave` (private status), or just say "Ralsei come here" to make him join your voice channel and "Ralsei leave" to make him go; battle sounds play automatically
 - Mini events in random channels (default 2%, 10 min cooldown): a scene appears with ACT buttons for choices
 - Live config reload: editing `~/.config/ralsei/config.jsonc` applies within a couple of seconds, no restart

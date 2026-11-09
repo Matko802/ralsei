@@ -19,5 +19,8 @@
   "event_chance": 0.02,
   "tts_enabled": false,
   "tts_binary": "/opt/piper/piper",
-  "tts_voice": "/opt/piper/voice.onnx"
+  "tts_voice": "/opt/piper/voice.onnx",
+  "ambient_enabled": true,
+  "ambient_chance": 0.5,
+  "ambient_interval": 30
 }

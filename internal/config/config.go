@@ -9,27 +9,30 @@ import (
 )
 
 type Config struct {
-	OwnerID        uint64   `json:"owner_id"`
-	BlockedIDs     []uint64 `json:"blocked_ids"`
-	DiscordToken   string   `json:"discord_token"`
-	BotName        string   `json:"bot_name"`
-	NotifyChannel  uint64   `json:"notify_channel"`
-	Managers       []uint64 `json:"managers"`
-	AdminIDs       []uint64 `json:"admin_ids"`
-	AIEnabled      bool     `json:"ai_enabled"`
-	AIModel        string   `json:"ai_model"`
-	OllamaHost     string   `json:"ollama_host"`
-	AIPrompt       string   `json:"ai_prompt"`
-	AITemperature  float64  `json:"ai_temperature"`
-	AIThink        bool     `json:"ai_think"`
-	Gamebox        bool     `json:"gamebox"`
-	RandomChannels []uint64 `json:"random_channels"`
-	RandomChance   float64  `json:"random_chance"`
-	EventsEnabled  bool     `json:"events_enabled"`
-	EventChance    float64  `json:"event_chance"`
-	TTSEnabled     bool     `json:"tts_enabled"`
-	TTSBinary      string   `json:"tts_binary"`
-	TTSVoice       string   `json:"tts_voice"`
+	OwnerID         uint64   `json:"owner_id"`
+	BlockedIDs      []uint64 `json:"blocked_ids"`
+	DiscordToken    string   `json:"discord_token"`
+	BotName         string   `json:"bot_name"`
+	NotifyChannel   uint64   `json:"notify_channel"`
+	Managers        []uint64 `json:"managers"`
+	AdminIDs        []uint64 `json:"admin_ids"`
+	AIEnabled       bool     `json:"ai_enabled"`
+	AIModel         string   `json:"ai_model"`
+	OllamaHost      string   `json:"ollama_host"`
+	AIPrompt        string   `json:"ai_prompt"`
+	AITemperature   float64  `json:"ai_temperature"`
+	AIThink         bool     `json:"ai_think"`
+	Gamebox         bool     `json:"gamebox"`
+	RandomChannels  []uint64 `json:"random_channels"`
+	RandomChance    float64  `json:"random_chance"`
+	EventsEnabled   bool     `json:"events_enabled"`
+	EventChance     float64  `json:"event_chance"`
+	TTSEnabled      bool     `json:"tts_enabled"`
+	TTSBinary       string   `json:"tts_binary"`
+	TTSVoice        string   `json:"tts_voice"`
+	AmbientEnabled  bool     `json:"ambient_enabled"`
+	AmbientChance   float64  `json:"ambient_chance"`
+	AmbientInterval int      `json:"ambient_interval"`
 }
 
 func Path() string {
@@ -150,6 +153,15 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.TTSVoice == "" {
 		cfg.TTSVoice = "/opt/piper/voice.onnx"
+	}
+	if cfg.AmbientChance <= 0 {
+		cfg.AmbientChance = 0.5
+	}
+	if cfg.AmbientChance > 1 {
+		cfg.AmbientChance = 1
+	}
+	if cfg.AmbientInterval <= 0 {
+		cfg.AmbientInterval = 30
 	}
 	return cfg, nil
 }
