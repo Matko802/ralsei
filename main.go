@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,6 +339,31 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "tts",
+			Description: "toggle text to speech in voice",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "value",
+					Description: "on or off, leave empty to show the current setting",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "on", Value: "on"},
+						{Name: "off", Value: "off"},
+					},
+				},
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -484,6 +510,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		a.handlePrefixVc(s, m)
 		return
 	}
+	if lowerRaw == "/tts" || strings.HasPrefix(lowerRaw, "/tts ") {
+		a.handlePrefixTTS(s, m)
+		return
+	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
 		a.sendHelp(s, m)
 		return
@@ -580,6 +610,7 @@ func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo
 		return
 	}
 	a.sendReply(s, channelID, ref, reply)
+	a.speak(reply)
 }
 
 func (a *App) sendReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, text string) {
@@ -948,23 +979,27 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			}
 			if st.HP <= 0 {
 				a.battleMu.Unlock()
+				a.speak(text)
 				a.respondGamebox(s, i, text+"\n\nRalsei is down.", continueComponents(id))
 				return
 			}
 			menu := battleText(st)
 			a.battleMu.Unlock()
+			a.speak(text)
 			a.respondGamebox(s, i, text+"\n\n"+menu, battleComponents(id))
 		case "continue":
 			a.playSound("continue")
 			st.HP = st.MaxHP
 			menu := battleText(st)
 			a.battleMu.Unlock()
+			a.speak("I am back. Let us keep going.")
 			a.respondGamebox(s, i, "(Ralsei gets back up.)\n\n"+menu, battleComponents(id))
 		case "mercy":
 			if spareable(st) {
 				a.battleMu.Unlock()
 				a.dropBattle(id)
 				a.playSound("win")
+				a.speak("Thank you for sparing me.")
 				a.respondGamebox(s, i, "YOU WON!\nRalsei was spared.", nil)
 				return
 			}
@@ -1007,6 +1042,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			a.playSound("act")
 			menu := battleText(st)
 			a.battleMu.Unlock()
+			a.speak(act.Text)
 			a.respondGamebox(s, i, act.Text+"\n\n"+menu, battleComponents(id))
 		case "back":
 			a.playSound("menu")
@@ -1047,6 +1083,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 			return
 		}
 		a.playSound("act")
+		a.speak(ev.Actions[actIdx].Text)
 		a.respondGamebox(s, i, ev.Actions[actIdx].Text, a.eventComponents(evIdx, ev))
 	}
 }
@@ -1137,6 +1174,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "vc" {
 		a.handleVcCommand(s, i)
+		return
+	}
+	if data.Name == "tts" {
+		a.handleTTSCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -1647,6 +1688,99 @@ func (a *App) playSound(name string) {
 	}
 }
 
+var parenRe = regexp.MustCompile(`\([^)]*\)`)
+
+func speechText(s string) string {
+	s = parenRe.ReplaceAllString(s, " ")
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) > 400 {
+		s = string(r[:400])
+	}
+	return s
+}
+
+func (a *App) speak(text string) {
+	cfg := a.snapshot()
+	if !cfg.TTSEnabled {
+		return
+	}
+	spoken := speechText(text)
+	if spoken == "" {
+		return
+	}
+	a.voiceMu.Lock()
+	connected := a.voice != nil && a.voice.Status == discordgo.VoiceConnectionStatusReady
+	a.voiceMu.Unlock()
+	if !connected {
+		return
+	}
+	go func() {
+		pcm, rate, err := audio.TTSPCM(spoken, cfg.TTSBinary, cfg.TTSVoice)
+		if err != nil {
+			log.Printf("tts: %v", err)
+			return
+		}
+		snd := audio.FromPCM(pcm, rate)
+		select {
+		case a.soundQ <- snd:
+		default:
+		}
+	}()
+}
+
+func (a *App) setTTS(text string) string {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "":
+		return fmt.Sprintf("tts is %v.", a.snapshot().TTSEnabled)
+	case "on", "true", "1", "yes":
+		a.mu.Lock()
+		a.cfg.TTSEnabled = true
+		a.mu.Unlock()
+		a.persist()
+		return "tts enabled."
+	case "off", "false", "0", "no":
+		a.mu.Lock()
+		a.cfg.TTSEnabled = false
+		a.mu.Unlock()
+		a.persist()
+		return "tts disabled."
+	default:
+		return "usage: /tts on|off"
+	}
+}
+
+func (a *App) handleTTSCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change tts.")
+		return
+	}
+	var value string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "value" {
+			value = o.StringValue()
+		}
+	}
+	respond(s, i, a.setTTS(value))
+}
+
+func (a *App) handlePrefixTTS(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change tts.", m.Reference())
+		return
+	}
+	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/tts"):])
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setTTS(value), m.Reference())
+}
+
 func (a *App) joinVoice(guildID, channelID string) error {
 	a.voiceMu.Lock()
 	if a.voice != nil {
@@ -1810,6 +1944,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/event on|off — anyone, mini events\n" +
 		"/act — anyone, Deltarune battle: FIGHT (timing), ACT (mercy), MERCY (spare), FLEE (deletes message)\n" +
 		"/vc join|leave — join your voice channel for battle sounds\n" +
+		"/tts on|off — owner/admin controls, speak replies in voice\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
@@ -1872,6 +2007,7 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
 		return
 	}
+	a.speak(reply)
 	if cfg.Gamebox && a.gb != nil {
 		if img, err := a.gb.Render(reply); err == nil {
 			if err := a.editInteractionImage(s, i, img); err == nil {

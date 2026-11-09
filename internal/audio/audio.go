@@ -1,8 +1,17 @@
 package audio
 
 import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"io"
 	"math"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/hraban/opus"
 )
@@ -92,6 +101,65 @@ func encode(pcm []int16) [][]byte {
 		frames = append(frames, buf[:n])
 	}
 	return frames
+}
+
+func resample(pcm []int16, from, to int) []int16 {
+	if from == to {
+		return pcm
+	}
+	n := int(float64(len(pcm)) * float64(to) / float64(from))
+	out := make([]int16, n)
+	ratio := float64(from) / float64(to)
+	for i := range out {
+		pos := float64(i) * ratio
+		i0 := int(pos)
+		i1 := i0 + 1
+		if i1 >= len(pcm) {
+			i1 = len(pcm) - 1
+		}
+		frac := pos - float64(i0)
+		out[i] = int16(float64(pcm[i0])*(1-frac) + float64(pcm[i1])*frac)
+	}
+	return out
+}
+
+func voiceSampleRate(model string) int {
+	data, err := os.ReadFile(model + ".json")
+	if err != nil {
+		return 22050
+	}
+	var meta struct {
+		Audio struct {
+			SampleRate int `json:"sample_rate"`
+		} `json:"audio"`
+	}
+	if json.Unmarshal(data, &meta) != nil || meta.Audio.SampleRate == 0 {
+		return 22050
+	}
+	return meta.Audio.SampleRate
+}
+
+func TTSPCM(text, bin, model string) ([]int16, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "--model", model, "--output_raw")
+	cmd.Stdin = strings.NewReader(text)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return nil, 0, err
+	}
+	raw := out.Bytes()
+	pcm := make([]int16, len(raw)/2)
+	for i := range pcm {
+		pcm[i] = int16(binary.LittleEndian.Uint16(raw[i*2:]))
+	}
+	return pcm, voiceSampleRate(model), nil
+}
+
+func FromPCM(pcm []int16, rate int) Sound {
+	return Sound{Frames: encode(resample(pcm, rate, SampleRate))}
 }
 
 var (

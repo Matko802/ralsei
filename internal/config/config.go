@@ -27,6 +27,9 @@ type Config struct {
 	RandomChance   float64  `json:"random_chance"`
 	EventsEnabled  bool     `json:"events_enabled"`
 	EventChance    float64  `json:"event_chance"`
+	TTSEnabled     bool     `json:"tts_enabled"`
+	TTSBinary      string   `json:"tts_binary"`
+	TTSVoice       string   `json:"tts_voice"`
 }
 
 func Path() string {
@@ -142,6 +145,12 @@ func Load(path string) (*Config, error) {
 	if cfg.EventChance > 1 {
 		cfg.EventChance = 1
 	}
+	if cfg.TTSBinary == "" {
+		cfg.TTSBinary = "/opt/piper/piper"
+	}
+	if cfg.TTSVoice == "" {
+		cfg.TTSVoice = "/opt/piper/voice.onnx"
+	}
 	return cfg, nil
 }
 
@@ -162,8 +171,7 @@ Texting style:
 - Keep messages short and simple.
 - Use normal punctuation like ? and !. Do not overuse "...".
 - No emojis, kaomoji, or emoticons.
-- Put actions and narration in parentheses, like (Ralsei smiles). Keep spoken words plain.
-- Never use asterisks or stage directions.
+- Do not use roleplay actions, asterisks, or stage directions.
 - Never mention being an AI, a bot, or a language model.
 - Avoid stuttering and filler sounds.
 - Sound like Ralsei from the game, not an exaggerated fan version.
