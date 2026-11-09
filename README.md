@@ -15,7 +15,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - `/ask text:<question>` slash command and `/ask <question>` text prefix command (Artixy-style)
 - Slash commands support guild, bot DM and private channel contexts, with guild and user install (same as Artixy)
 - `/settings setting:<status|model|personality|think|chance|gamebox|tts|events|ambient|ambient_chance|ambient_interval> value:<v>` — all bot settings in one organised command (owner/admins/managers)
-- Ambient chatter: 50% chance every 30s in random channels when nobody is talking to him
+- Ambient chatter: 50% chance every 30s, spoken in the voice channel only (requires TTS), and only when nobody has talked to him for 90s
 - `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
 - `/act` — anyone, opens a Deltarune battle window: FIGHT is a timing minigame (fast STRIKE = more damage, 2-6% TP), ACT builds Mercy, MERCY spares at 100% Mercy or tired (HP <= 50%), FLEE deletes the message, and a CONTINUE button appears when Ralsei is down
 - Voice: `/vc join|leave` (private status), or just say "Ralsei come here" to make him join your voice channel and "Ralsei leave" to make him go; battle sounds play automatically
