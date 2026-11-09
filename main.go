@@ -153,6 +153,31 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "think",
+			Description: "turn AI thinking on or off",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "value",
+					Description: "true or false, leave empty to show the current setting",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "true", Value: "true"},
+						{Name: "false", Value: "false"},
+					},
+				},
+			},
+		},
 	}
 	if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", cmds); err != nil {
 		log.Printf("command register: %v", err)
@@ -252,6 +277,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 	if lowerRaw == "/personality" || strings.HasPrefix(lowerRaw, "/personality ") {
 		a.handlePrefixPersonality(s, m)
+		return
+	}
+	if lowerRaw == "/think" || strings.HasPrefix(lowerRaw, "/think ") {
+		a.handlePrefixThink(s, m)
 		return
 	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
@@ -408,6 +437,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "personality" {
 		a.handlePersonalityCommand(s, i)
+		return
+	}
+	if data.Name == "think" {
+		a.handleThinkCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -597,6 +630,60 @@ func (a *App) handlePrefixPersonality(s *discordgo.Session, m *discordgo.Message
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setPersonality(text), m.Reference())
 }
 
+func (a *App) setThink(text string) string {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "":
+		return fmt.Sprintf("think is %v.", a.snapshot().AIThink)
+	case "true", "on", "1", "yes":
+		a.mu.Lock()
+		a.cfg.AIThink = true
+		a.mu.Unlock()
+		a.applyAIConfig()
+		a.persist()
+		return "think enabled."
+	case "false", "off", "0", "no":
+		a.mu.Lock()
+		a.cfg.AIThink = false
+		a.mu.Unlock()
+		a.applyAIConfig()
+		a.persist()
+		return "think disabled."
+	default:
+		return "usage: /think true|false"
+	}
+}
+
+func (a *App) handleThinkCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change thinking.")
+		return
+	}
+	var value string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "value" {
+			value = o.StringValue()
+		}
+	}
+	respond(s, i, a.setThink(value))
+}
+
+func (a *App) handlePrefixThink(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change thinking.", m.Reference())
+		return
+	}
+	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/think"):])
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setThink(value), m.Reference())
+}
+
 func (a *App) watchConfig(path, token string) {
 	lastMod := time.Time{}
 	lastSize := int64(-1)
@@ -637,6 +724,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/ask <question> — ask me\n" +
 		"/ai status|model <name> — owner/admin controls\n" +
 		"/personality <text> — owner/admin controls, reset restores default\n" +
+		"/think true|false — owner/admin controls\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }

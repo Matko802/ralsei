@@ -153,6 +153,7 @@ func (e *Engine) call(url, model, system, prompt string, temperature float64, th
 		Stream: false,
 		Options: map[string]any{
 			"temperature": temperature,
+			"num_ctx":     4096,
 		},
 	}
 	if think {
