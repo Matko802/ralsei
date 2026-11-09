@@ -1,0 +1,17 @@
+[Unit]
+Description=ralsei - Ollama Discord bot
+
+[Container]
+Image=localhost/ralsei:latest
+ContainerName=ralsei
+Network=host
+Environment=RALSEI_CONFIG=/config/config.jsonc
+Volume=%h/.config/ralsei:/config
+UserNS=keep-id
+Pull=never
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
