@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"image"
@@ -41,6 +42,7 @@ type App struct {
 	gb        *gamebox.Renderer
 	dg        *discordgo.Session
 	voice     *discordgo.VoiceConnection
+	voiceCh   string
 	soundQ    chan audio.Sound
 }
 
@@ -820,8 +822,10 @@ func (a *App) handleActCommand(s *discordgo.Session, m *discordgo.MessageCreate)
 
 func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	id, st := a.newBattle()
-	a.autoJoinVoice(i)
-	a.playSound("menu")
+	go func() {
+		a.autoJoinVoice(i)
+		a.playSound("menu")
+	}()
 	a.respondGamebox(s, i, battleText(st), battleComponents(id))
 }
 
@@ -1620,7 +1624,7 @@ func (a *App) soundWorker() {
 		a.voiceMu.Lock()
 		vc := a.voice
 		a.voiceMu.Unlock()
-		if vc == nil || !vc.Ready {
+		if vc == nil || vc.Status != discordgo.VoiceConnectionStatusReady {
 			continue
 		}
 		for _, frame := range snd.Frames {
@@ -1645,19 +1649,31 @@ func (a *App) playSound(name string) {
 
 func (a *App) joinVoice(guildID, channelID string) error {
 	a.voiceMu.Lock()
-	defer a.voiceMu.Unlock()
 	if a.voice != nil {
-		if a.voice.ChannelID == channelID {
+		if a.voiceCh == channelID {
+			a.voiceMu.Unlock()
 			return nil
 		}
-		a.voice.Disconnect()
+		a.voice.Disconnect(context.Background())
 		a.voice = nil
+		a.voiceCh = ""
 	}
-	vc, err := a.dg.ChannelVoiceJoin(guildID, channelID, false, true)
+	a.voiceMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	vc, err := a.dg.ChannelVoiceJoin(ctx, guildID, channelID, false, true)
 	if err != nil {
 		return err
 	}
+	if err := vc.WaitForDAVEReady(ctx); err != nil {
+		log.Printf("dave ready: %v", err)
+	}
+
+	a.voiceMu.Lock()
 	a.voice = vc
+	a.voiceCh = channelID
+	a.voiceMu.Unlock()
 	log.Printf("voice joined %s", channelID)
 	return nil
 }
@@ -1666,8 +1682,9 @@ func (a *App) leaveVoice() {
 	a.voiceMu.Lock()
 	defer a.voiceMu.Unlock()
 	if a.voice != nil {
-		a.voice.Disconnect()
+		a.voice.Disconnect(context.Background())
 		a.voice = nil
+		a.voiceCh = ""
 	}
 }
 
@@ -1711,11 +1728,14 @@ func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 		respond(s, i, "join a voice channel first, then run /vc join.")
 		return
 	}
-	if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
-		respond(s, i, "could not join voice: "+err.Error())
-		return
-	}
-	respond(s, i, "joined <#"+vs.ChannelID+">.")
+	respond(s, i, "joining <#"+vs.ChannelID+">...")
+	go func() {
+		if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
+			_, _ = s.ChannelMessageSend(i.ChannelID, "could not join voice: "+err.Error())
+			return
+		}
+		_, _ = s.ChannelMessageSend(i.ChannelID, "joined <#"+vs.ChannelID+">.")
+	}()
 }
 
 func (a *App) handlePrefixVc(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -1733,11 +1753,14 @@ func (a *App) handlePrefixVc(s *discordgo.Session, m *discordgo.MessageCreate) {
 		_, _ = s.ChannelMessageSendReply(m.ChannelID, "join a voice channel first.", m.Reference())
 		return
 	}
-	if err := a.joinVoice(m.GuildID, vs.ChannelID); err != nil {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "could not join voice.", m.Reference())
-		return
-	}
-	_, _ = s.ChannelMessageSendReply(m.ChannelID, "joined <#"+vs.ChannelID+">.", m.Reference())
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, "joining <#"+vs.ChannelID+">...", m.Reference())
+	go func() {
+		if err := a.joinVoice(m.GuildID, vs.ChannelID); err != nil {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "could not join voice.")
+			return
+		}
+		_, _ = s.ChannelMessageSend(m.ChannelID, "joined <#"+vs.ChannelID+">.")
+	}()
 }
 
 func (a *App) watchConfig(path, token string) {
