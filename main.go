@@ -722,14 +722,20 @@ func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.Interactio
 }
 
 func (a *App) respondGamebox(s *discordgo.Session, i *discordgo.InteractionCreate, text string, components []discordgo.MessageComponent) {
+	typ := discordgo.InteractionResponseChannelMessageWithSource
+	if i.Type == discordgo.InteractionMessageComponent {
+		typ = discordgo.InteractionResponseUpdateMessage
+	}
+	att := []*discordgo.MessageAttachment{}
 	cfg := a.snapshot()
 	if cfg.Gamebox && a.gb != nil {
 		if img, err := a.gb.Render(text); err == nil {
 			err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Type: typ,
 				Data: &discordgo.InteractionResponseData{
-					Files:      []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
-					Components: components,
+					Files:       []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+					Attachments: &att,
+					Components:  components,
 				},
 			})
 			if err == nil {
@@ -739,10 +745,11 @@ func (a *App) respondGamebox(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 	}
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Type: typ,
 		Data: &discordgo.InteractionResponseData{
-			Content:    text,
-			Components: components,
+			Content:     text,
+			Components:  components,
+			Attachments: &att,
 		},
 	})
 	if err != nil {
@@ -768,7 +775,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if idx < 0 || idx >= len(actions) {
 			return
 		}
-		a.respondGamebox(s, i, actions[idx].Text, nil)
+		a.respondGamebox(s, i, actions[idx].Text, a.actComponents())
 	case "evt":
 		if len(parts) != 3 {
 			return
@@ -786,7 +793,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if actIdx < 0 || actIdx >= len(ev.Actions) {
 			return
 		}
-		a.respondGamebox(s, i, ev.Actions[actIdx].Text, nil)
+		a.respondGamebox(s, i, ev.Actions[actIdx].Text, a.eventComponents(evIdx, ev))
 	}
 }
 
