@@ -21,7 +21,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - `/gamebox on|off` for owner, admins and managers — replies as a Deltarune-style black box image with a white border, the bot avatar on the left (monochrome, 2x contrast) and in-game font
 - `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
 - `/event on|off` — anyone can toggle mini events
-- `/act` — anyone, opens a Deltarune battle window with FIGHT, ACT, MERCY and FLEE (FLEE deletes the message); ACT opens Compliment, Hug, Flirt, Check
+- `/act` — anyone, opens a Deltarune battle window: FIGHT is a timing minigame (fast STRIKE = more damage, 2-6% TP), ACT builds Mercy, MERCY spares at 100% Mercy or tired (HP <= 50%), FLEE deletes the message, and a CONTINUE button appears when Ralsei is down
 - Mini events in random channels (default 2%, 10 min cooldown): a scene appears with ACT buttons for choices
 - Live config reload: editing `~/.config/ralsei/config.jsonc` applies within a couple of seconds, no restart
 - Random replies: 2% chance to answer any message in channels listed in `random_channels`

@@ -30,7 +30,9 @@ import (
 type App struct {
 	mu        sync.Mutex
 	eventMu   sync.Mutex
+	battleMu  sync.Mutex
 	lastEvent map[string]time.Time
+	battles   map[string]*battleState
 	cfg       *config.Config
 	cfgPath   string
 	eng       *ai.Engine
@@ -51,7 +53,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time)}
+	app := &App{cfg: cfg, cfgPath: path, lastEvent: make(map[string]time.Time), battles: make(map[string]*battleState)}
 	app.eng = ai.New(ai.Config{
 		Host:        cfg.OllamaHost,
 		Model:       cfg.AIModel,
@@ -681,53 +683,99 @@ func actActions() []actAction {
 	}
 }
 
-func battleComponents() []discordgo.MessageComponent {
+type battleState struct {
+	HP         int
+	MaxHP      int
+	Mercy      int
+	TP         int
+	FightStart time.Time
+}
+
+func (a *App) newBattle() (string, *battleState) {
+	id := fmt.Sprintf("%x", rand.Uint64())
+	st := &battleState{HP: 70, MaxHP: 70}
+	a.battleMu.Lock()
+	a.battles[id] = st
+	a.battleMu.Unlock()
+	return id, st
+}
+
+func (a *App) dropBattle(id string) {
+	a.battleMu.Lock()
+	delete(a.battles, id)
+	a.battleMu.Unlock()
+}
+
+func battleComponents(id string) []discordgo.MessageComponent {
 	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: "FIGHT", Style: discordgo.DangerButton, CustomID: "battle:fight"},
-		discordgo.Button{Label: "ACT", Style: discordgo.PrimaryButton, CustomID: "battle:act"},
-		discordgo.Button{Label: "MERCY", Style: discordgo.SuccessButton, CustomID: "battle:mercy"},
-		discordgo.Button{Label: "FLEE", Style: discordgo.SecondaryButton, CustomID: "battle:flee"},
+		discordgo.Button{Label: "FIGHT", Style: discordgo.DangerButton, CustomID: "battle:" + id + ":fight"},
+		discordgo.Button{Label: "ACT", Style: discordgo.PrimaryButton, CustomID: "battle:" + id + ":act"},
+		discordgo.Button{Label: "MERCY", Style: discordgo.SuccessButton, CustomID: "battle:" + id + ":mercy"},
+		discordgo.Button{Label: "FLEE", Style: discordgo.SecondaryButton, CustomID: "battle:" + id + ":flee"},
 	}}}
 }
 
-func actMenuComponents() []discordgo.MessageComponent {
+func actMenuComponents(id string) []discordgo.MessageComponent {
 	actions := actActions()
 	row := make([]discordgo.MessageComponent, 0, len(actions)+1)
 	for i, act := range actions {
 		row = append(row, discordgo.Button{
 			Label:    act.Label,
 			Style:    buttonStyle(act.Style),
-			CustomID: fmt.Sprintf("battle:act:%d", i),
+			CustomID: fmt.Sprintf("battle:%s:act:%d", id, i),
 		})
 	}
-	row = append(row, discordgo.Button{Label: "Back", Style: discordgo.SecondaryButton, CustomID: "battle:back"})
+	row = append(row, discordgo.Button{Label: "Back", Style: discordgo.SecondaryButton, CustomID: "battle:" + id + ":back"})
 	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: row}}
 }
 
-func battleText() string {
-	return "RALSEI   HP 70/70\nWhat will you do?"
+func strikeComponents(id string) []discordgo.MessageComponent {
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.Button{Label: "STRIKE", Style: discordgo.DangerButton, CustomID: "battle:" + id + ":strike"},
+	}}}
 }
 
-func actText() string {
+func continueComponents(id string) []discordgo.MessageComponent {
+	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.Button{Label: "CONTINUE", Style: discordgo.PrimaryButton, CustomID: "battle:" + id + ":continue"},
+		discordgo.Button{Label: "FLEE", Style: discordgo.SecondaryButton, CustomID: "battle:" + id + ":flee"},
+	}}}
+}
+
+func spareable(st *battleState) bool {
+	return st.Mercy >= 100 || st.HP <= st.MaxHP/2
+}
+
+func battleText(st *battleState) string {
+	mark := ""
+	if spareable(st) {
+		mark = " *"
+	}
+	return fmt.Sprintf("RALSEI%s   HP %d/%d\nMercy %d%%   TP %d%%\nWhat will you do?", mark, st.HP, st.MaxHP, st.Mercy, st.TP)
+}
+
+func actText(id string) string {
 	return "RALSEI   HP 70/70\nACT"
 }
 
 func (a *App) sendBattle(s *discordgo.Session, channelID string, ref *discordgo.MessageReference) {
+	id, st := a.newBattle()
 	msg := &discordgo.MessageSend{
-		Components: battleComponents(),
+		Components: battleComponents(id),
 		Reference:  ref,
 	}
 	cfg := a.snapshot()
 	if cfg.Gamebox && a.gb != nil {
-		if img, err := a.gb.Render(battleText()); err == nil {
+		if img, err := a.gb.Render(battleText(st)); err == nil {
 			msg.Files = []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}}
 		}
 	}
 	if len(msg.Files) == 0 {
-		msg.Content = battleText()
+		msg.Content = battleText(st)
 	}
 	if _, err := s.ChannelMessageSendComplex(channelID, msg); err != nil {
 		log.Printf("battle send: %v", err)
+		a.dropBattle(id)
 	}
 }
 
@@ -736,10 +784,12 @@ func (a *App) handleActCommand(s *discordgo.Session, m *discordgo.MessageCreate)
 }
 
 func (a *App) handleActInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	a.respondGamebox(s, i, battleText(), battleComponents())
+	id, st := a.newBattle()
+	a.respondGamebox(s, i, battleText(st), battleComponents(id))
 }
 
-func (a *App) fleeMenu(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (a *App) fleeMenu(s *discordgo.Session, i *discordgo.InteractionCreate, id string) {
+	a.dropBattle(id)
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredMessageUpdate,
 	}); err != nil {
@@ -795,32 +845,122 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 	switch parts[0] {
 	case "battle":
-		if len(parts) < 2 {
+		if len(parts) < 3 {
 			return
 		}
-		switch parts[1] {
+		id := parts[1]
+		action := parts[2]
+		a.battleMu.Lock()
+		st := a.battles[id]
+		if st == nil {
+			a.battleMu.Unlock()
+			respond(s, i, "This battle is over. Use /act to start a new one.")
+			return
+		}
+		switch action {
 		case "fight":
-			a.respondGamebox(s, i, "(You attack Ralsei. He does not dodge. Ralsei takes 1 damage.) Ow... that is okay, I can take it.", battleComponents())
-		case "mercy":
-			a.respondGamebox(s, i, "(You spare Ralsei.) Ralsei smiles. Thank you for being kind.", battleComponents())
-		case "flee":
-			a.fleeMenu(s, i)
-		case "back":
-			a.respondGamebox(s, i, battleText(), battleComponents())
-		case "act":
-			if len(parts) == 2 {
-				a.respondGamebox(s, i, actText(), actMenuComponents())
+			st.FightStart = time.Now()
+			text := fmt.Sprintf("RALSEI   HP %d/%d\nFIGHT\nPress STRIKE with good timing!", st.HP, st.MaxHP)
+			a.battleMu.Unlock()
+			a.respondGamebox(s, i, text, strikeComponents(id))
+		case "strike":
+			elapsed := time.Since(st.FightStart)
+			acc := 100 - int(elapsed.Milliseconds())/40
+			if acc > 100 {
+				acc = 100
+			}
+			if acc < 0 {
+				acc = 0
+			}
+			dmg := 0
+			if acc >= 10 {
+				dmg = acc * 22 / 100
+				if dmg < 1 {
+					dmg = 1
+				}
+			}
+			st.TP += acc / 20
+			if st.TP > 100 {
+				st.TP = 100
+			}
+			var text string
+			if dmg == 0 {
+				text = "MISS! (Your timing was off.) Ralsei looks relieved."
+			} else {
+				st.HP -= dmg
+				if st.HP < 0 {
+					st.HP = 0
+				}
+				reaction := "Ow! That was a good hit."
+				if st.HP <= 0 {
+					reaction = "(Ralsei falls over.) Oh... that is okay. I can get back up."
+				} else if st.HP <= st.MaxHP/2 {
+					reaction = "(Ralsei is tired and breathing hard.)"
+				}
+				text = fmt.Sprintf("(You strike Ralsei. Accuracy %d%%, %d damage.) %s", acc, dmg, reaction)
+			}
+			if st.HP <= 0 {
+				a.battleMu.Unlock()
+				a.respondGamebox(s, i, text+"\n\nRalsei is down.", continueComponents(id))
 				return
 			}
-			idx, err := strconv.Atoi(parts[2])
+			menu := battleText(st)
+			a.battleMu.Unlock()
+			a.respondGamebox(s, i, text+"\n\n"+menu, battleComponents(id))
+		case "continue":
+			st.HP = st.MaxHP
+			menu := battleText(st)
+			a.battleMu.Unlock()
+			a.respondGamebox(s, i, "(Ralsei gets back up.)\n\n"+menu, battleComponents(id))
+		case "mercy":
+			if spareable(st) {
+				a.battleMu.Unlock()
+				a.dropBattle(id)
+				a.respondGamebox(s, i, "YOU WON!\nRalsei was spared.", nil)
+				return
+			}
+			st.Mercy += 10
+			if st.Mercy > 100 {
+				st.Mercy = 100
+			}
+			menu := battleText(st)
+			a.battleMu.Unlock()
+			a.respondGamebox(s, i, "You tried to SPARE Ralsei, but his name was not YELLOW...\n(+10% MERCY)\n\n"+menu, battleComponents(id))
+		case "flee":
+			a.battleMu.Unlock()
+			a.fleeMenu(s, i, id)
+		case "act":
+			if len(parts) == 3 {
+				a.battleMu.Unlock()
+				a.respondGamebox(s, i, actText(id), actMenuComponents(id))
+				return
+			}
+			idx, err := strconv.Atoi(parts[3])
 			if err != nil {
+				a.battleMu.Unlock()
 				return
 			}
 			actions := actActions()
 			if idx < 0 || idx >= len(actions) {
+				a.battleMu.Unlock()
 				return
 			}
-			a.respondGamebox(s, i, actions[idx].Text, battleComponents())
+			act := actions[idx]
+			if act.Label != "Check" {
+				st.Mercy += 25
+				if st.Mercy > 100 {
+					st.Mercy = 100
+				}
+			}
+			menu := battleText(st)
+			a.battleMu.Unlock()
+			a.respondGamebox(s, i, act.Text+"\n\n"+menu, battleComponents(id))
+		case "back":
+			menu := battleText(st)
+			a.battleMu.Unlock()
+			a.respondGamebox(s, i, menu, battleComponents(id))
+		default:
+			a.battleMu.Unlock()
 		}
 	case "act":
 		if len(parts) != 2 {
@@ -834,7 +974,7 @@ func (a *App) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if idx < 0 || idx >= len(actions) {
 			return
 		}
-		a.respondGamebox(s, i, actions[idx].Text, battleComponents())
+		a.respondGamebox(s, i, actions[idx].Text, nil)
 	case "evt":
 		if len(parts) != 3 {
 			return
@@ -1465,7 +1605,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
 		"/forget [all] — owner/admin controls, clear AI memory\n" +
 		"/event on|off — anyone, mini events\n" +
-		"/act — anyone, battle menu: FIGHT, ACT, MERCY, FLEE (FLEE deletes the message)\n" +
+		"/act — anyone, Deltarune battle: FIGHT (timing), ACT (mercy), MERCY (spare), FLEE (deletes message)\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
