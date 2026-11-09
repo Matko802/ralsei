@@ -66,6 +66,10 @@ The config path can also be set with `RALSEI_CONFIG`. Default: `~/.config/ralsei
 
 `ai_prompt` is the bot's personality. You can also set it from Discord with `/personality <text>`; edits to the config file are picked up live (polled every 2 seconds) and applied without restarting.
 
+## Fonts
+
+`fonts/DeterminationMono.ttf` is the Determination Mono font (Harry Wakamatsu, via https://gitlab.com/cartr/undertale-fonts), used for gamebox image replies. See `fonts/README.txt`.
+
 ## Podman
 
 The bot runs as a rootless Podman container managed by a quadlet unit.

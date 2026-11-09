@@ -13,5 +13,6 @@
   "ai_temperature": 0.7,
   "ai_think": false,
   "random_channels": [],
-  "random_chance": 0.02
+  "random_chance": 0.02,
+  "gamebox": false
 }

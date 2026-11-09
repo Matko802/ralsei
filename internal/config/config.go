@@ -22,6 +22,7 @@ type Config struct {
 	AIPrompt       string   `json:"ai_prompt"`
 	AITemperature  float64  `json:"ai_temperature"`
 	AIThink        bool     `json:"ai_think"`
+	Gamebox        bool     `json:"gamebox"`
 	RandomChannels []uint64 `json:"random_channels"`
 	RandomChance   float64  `json:"random_chance"`
 }

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/Matko802/ralsei/internal/ai"
 	"github.com/Matko802/ralsei/internal/config"
+	"github.com/Matko802/ralsei/internal/gamebox"
 )
 
 type App struct {
@@ -24,6 +27,7 @@ type App struct {
 	cfg     *config.Config
 	cfgPath string
 	eng     *ai.Engine
+	gb      *gamebox.Renderer
 	dg      *discordgo.Session
 }
 
@@ -48,6 +52,10 @@ func main() {
 		Temperature: cfg.AITemperature,
 		Think:       cfg.AIThink,
 	})
+	app.gb = loadGamebox(path)
+	if app.gb != nil {
+		log.Println("gamebox renderer ready")
+	}
 
 	dg, err := discordgo.New("Bot " + cfg.DiscordToken)
 	if err != nil {
@@ -200,6 +208,31 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 				},
 			},
 		},
+		{
+			Name:        "gamebox",
+			Description: "toggle Deltarune-style image replies",
+			Contexts: &[]discordgo.InteractionContextType{
+				discordgo.InteractionContextGuild,
+				discordgo.InteractionContextBotDM,
+				discordgo.InteractionContextPrivateChannel,
+			},
+			IntegrationTypes: &[]discordgo.ApplicationIntegrationType{
+				discordgo.ApplicationIntegrationGuildInstall,
+				discordgo.ApplicationIntegrationUserInstall,
+			},
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "value",
+					Description: "on or off, leave empty to show the current setting",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "on", Value: "on"},
+						{Name: "off", Value: "off"},
+					},
+				},
+			},
+		},
 	}
 	guildCmds := withContexts(cmds, []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
@@ -326,6 +359,10 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		a.handlePrefixChance(s, m)
 		return
 	}
+	if lowerRaw == "/gamebox" || strings.HasPrefix(lowerRaw, "/gamebox ") {
+		a.handlePrefixGamebox(s, m)
+		return
+	}
 	if lowerRaw == "/help" || lowerRaw == "/commands" {
 		a.sendHelp(s, m)
 		return
@@ -409,19 +446,40 @@ func (a *App) askAndReply(s *discordgo.Session, channelID string, ref *discordgo
 		_, _ = s.ChannelMessageSendReply(channelID, "AI error, try again later.", ref)
 		return
 	}
-	chunks := ai.ChunkReply(reply)
-	for i, c := range chunks {
-		if i == 0 {
+	a.sendReply(s, channelID, ref, reply)
+}
+
+func (a *App) sendReply(s *discordgo.Session, channelID string, ref *discordgo.MessageReference, text string) {
+	cfg := a.snapshot()
+	if cfg.Gamebox && a.gb != nil {
+		img, err := a.gb.Render(text)
+		if err == nil {
 			_, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-				Content:   c,
+				Files:     []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
 				Reference: ref,
 			})
+			if err == nil {
+				return
+			}
+			log.Printf("gamebox send: %v", err)
 		} else {
-			_, err = s.ChannelMessageSend(channelID, c)
+			log.Printf("gamebox render: %v", err)
 		}
-		if err != nil {
-			log.Printf("send: %v", err)
-			return
+	}
+	for i, c := range ai.ChunkReply(text) {
+		if i == 0 {
+			if _, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+				Content:   c,
+				Reference: ref,
+			}); err != nil {
+				log.Printf("send: %v", err)
+				return
+			}
+		} else {
+			if _, err := s.ChannelMessageSend(channelID, c); err != nil {
+				log.Printf("send: %v", err)
+				return
+			}
 		}
 	}
 }
@@ -488,6 +546,10 @@ func (a *App) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 	if data.Name == "chance" {
 		a.handleChanceCommand(s, i)
+		return
+	}
+	if data.Name == "gamebox" {
+		a.handleGameboxCommand(s, i)
 		return
 	}
 	if data.Name != "ai" {
@@ -782,6 +844,80 @@ func (a *App) handlePrefixChance(s *discordgo.Session, m *discordgo.MessageCreat
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setChance(value), m.Reference())
 }
 
+func loadGamebox(cfgPath string) *gamebox.Renderer {
+	exe, _ := os.Executable()
+	paths := []string{}
+	if p := os.Getenv("RALSEI_FONT"); p != "" {
+		paths = append(paths, p)
+	}
+	paths = append(paths,
+		filepath.Join(filepath.Dir(exe), "fonts", "DeterminationMono.ttf"),
+		"/usr/local/share/ralsei/DeterminationMono.ttf",
+		filepath.Join(filepath.Dir(cfgPath), "DeterminationMono.ttf"),
+	)
+	gb, err := gamebox.Load(paths...)
+	if err != nil {
+		log.Printf("gamebox unavailable: %v", err)
+		return nil
+	}
+	return gb
+}
+
+func (a *App) setGamebox(text string) string {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "":
+		return fmt.Sprintf("gamebox is %v.", a.snapshot().Gamebox)
+	case "on", "true", "1", "yes":
+		a.mu.Lock()
+		a.cfg.Gamebox = true
+		a.mu.Unlock()
+		a.persist()
+		if a.gb == nil {
+			return "gamebox enabled, but the font is not loaded, replies stay text."
+		}
+		return "gamebox enabled."
+	case "off", "false", "0", "no":
+		a.mu.Lock()
+		a.cfg.Gamebox = false
+		a.mu.Unlock()
+		a.persist()
+		return "gamebox disabled."
+	default:
+		return "usage: /gamebox on|off"
+	}
+}
+
+func (a *App) handleGameboxCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	caller := ""
+	if i.Member != nil && i.Member.User != nil {
+		caller = i.Member.User.ID
+	} else if i.User != nil {
+		caller = i.User.ID
+	}
+	uid, err := u64(caller)
+	if err != nil || !a.isElevated(uid) {
+		respond(s, i, "you are not allowed to change gamebox.")
+		return
+	}
+	var value string
+	for _, o := range i.ApplicationCommandData().Options {
+		if o.Name == "value" {
+			value = o.StringValue()
+		}
+	}
+	respond(s, i, a.setGamebox(value))
+}
+
+func (a *App) handlePrefixGamebox(s *discordgo.Session, m *discordgo.MessageCreate) {
+	uid, err := u64(m.Author.ID)
+	if err != nil || !a.isElevated(uid) {
+		_, _ = s.ChannelMessageSendReply(m.ChannelID, "you are not allowed to change gamebox.", m.Reference())
+		return
+	}
+	value := strings.TrimSpace(strings.TrimSpace(m.Content)[len("/gamebox"):])
+	_, _ = s.ChannelMessageSendReply(m.ChannelID, a.setGamebox(value), m.Reference())
+}
+
 func (a *App) watchConfig(path, token string) {
 	lastMod := time.Time{}
 	lastSize := int64(-1)
@@ -824,6 +960,7 @@ func (a *App) sendHelp(s *discordgo.Session, m *discordgo.MessageCreate) {
 		"/personality <text> — owner/admin controls, reset restores default\n" +
 		"/think true|false — owner/admin controls\n" +
 		"/chance <0-100> — owner/admin controls, random reply percent\n" +
+		"/gamebox on|off — owner/admin controls, Deltarune image replies\n" +
 		"config: ~/.config/ralsei/config.jsonc — edits apply live"
 	_, _ = s.ChannelMessageSendReply(m.ChannelID, text, m.Reference())
 }
@@ -885,6 +1022,17 @@ func (a *App) handleAskCommand(s *discordgo.Session, i *discordgo.InteractionCre
 		msg := "AI error, try again later."
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
 		return
+	}
+	if cfg.Gamebox && a.gb != nil {
+		if img, err := a.gb.Render(reply); err == nil {
+			if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Files: []*discordgo.File{{Name: "ralsei.png", Reader: bytes.NewReader(img)}},
+			}); err == nil {
+				return
+			} else {
+				log.Printf("gamebox edit: %v", err)
+			}
+		}
 	}
 	chunks := ai.ChunkReply(reply)
 	first := chunks[0]
