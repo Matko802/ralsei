@@ -47,6 +47,7 @@ type App struct {
 	soundQ     chan audio.Sound
 	ambMu      sync.Mutex
 	lastActive map[string]time.Time
+	lastTalk   time.Time
 }
 
 func main() {
@@ -1626,6 +1627,7 @@ const ambientSystem = `You are Ralsei from DELTARUNE, alone for a moment. Say on
 func (a *App) markActive(channelID string) {
 	a.ambMu.Lock()
 	a.lastActive[channelID] = time.Now()
+	a.lastTalk = time.Now()
 	a.ambMu.Unlock()
 }
 
@@ -1638,13 +1640,17 @@ func (a *App) ambientLoop() {
 		}
 		time.Sleep(time.Duration(interval) * time.Second)
 		cfg = a.snapshot()
-		if !cfg.AmbientEnabled || len(cfg.RandomChannels) == 0 {
+		if !cfg.AmbientEnabled {
 			continue
 		}
-		ch := cfg.RandomChannels[rand.IntN(len(cfg.RandomChannels))]
-		channelID := fmt.Sprint(ch)
+		a.voiceMu.Lock()
+		inVoice := a.voice != nil && a.voice.Status == discordgo.VoiceConnectionStatusReady && a.voiceCh != ""
+		a.voiceMu.Unlock()
+		if !inVoice {
+			continue
+		}
 		a.ambMu.Lock()
-		last := a.lastActive[channelID]
+		last := a.lastTalk
 		a.ambMu.Unlock()
 		if time.Since(last) < 90*time.Second {
 			continue
@@ -1659,7 +1665,7 @@ func (a *App) ambientLoop() {
 		if rand.Float64() >= chance {
 			continue
 		}
-		a.markActive(channelID)
+		a.markActive("ambient")
 		line, err := a.eng.Complete(ambientSystem, "Say something.", 0.9)
 		if err != nil {
 			log.Printf("ambient: %v", err)
@@ -1669,8 +1675,7 @@ func (a *App) ambientLoop() {
 		if line == "" {
 			continue
 		}
-		log.Printf("ambient line in %s", channelID)
-		a.sendReply(a.dg, channelID, nil, line)
+		log.Printf("ambient voice line")
 		a.speak(line)
 	}
 }
