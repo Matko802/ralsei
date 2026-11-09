@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"strings"
@@ -187,24 +188,35 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	cfg := a.snapshot()
 	id := s.State.User.ID
-	lower := strings.ToLower(m.Content)
 	name := a.botName()
+	lower := strings.ToLower(m.Content)
 	mentioned := strings.Contains(m.Content, "<@"+id+">") ||
 		strings.Contains(m.Content, "<@!"+id+">") ||
 		(name != "" && strings.Contains(lower, name))
-	if !mentioned {
-		return
+
+	var prompt string
+	if mentioned {
+		prompt = stripName(stripIDTag(m.Content, id), name)
+		if strings.TrimSpace(prompt) == "" {
+			prompt = "hello"
+		}
+	} else {
+		if !a.randomHit(cfg, m.ChannelID) {
+			return
+		}
+		prompt = strings.TrimSpace(m.Content)
+		if len([]rune(prompt)) < 2 {
+			return
+		}
+		log.Printf("random reply in %s", m.ChannelID)
 	}
 
-	prompt := stripName(stripIDTag(m.Content, id), name)
-	if strings.TrimSpace(prompt) == "" {
-		prompt = "hello"
-	}
-
-	cfg := a.snapshot()
 	if !enabled(cfg) {
-		_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI is off — the owner runs /ai on to enable me.", m.Reference())
+		if mentioned {
+			_, _ = s.ChannelMessageSendReply(m.ChannelID, "AI is off — the owner runs /ai on to enable me.", m.Reference())
+		}
 		return
 	}
 
@@ -236,6 +248,31 @@ func (a *App) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 	}
+}
+
+func (a *App) randomHit(cfg *config.Config, channelID string) bool {
+	cid, err := u64(channelID)
+	if err != nil {
+		return false
+	}
+	allowed := false
+	for _, id := range cfg.RandomChannels {
+		if id == cid {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return false
+	}
+	chance := cfg.RandomChance
+	if chance <= 0 {
+		chance = 0.02
+	}
+	if chance > 1 {
+		chance = 1
+	}
+	return rand.Float64() < chance
 }
 
 func (a *App) startTyping(channel string) chan struct{} {

@@ -11,6 +11,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - Keeps short per-channel conversation history (10 messages, 3000 chars)
 - Splits long replies into up to 4 Discord messages
 - `/ai status|on|off|clear|model name:<model>` for owner, admins and managers
+- Random replies: 2% chance to answer any message in channels listed in `random_channels`
 - Comments and trailing commas allowed in config (JSONC)
 - Config changes from `/ai` are persisted back to the config file
 
@@ -26,7 +27,7 @@ go build -o ralsei .
 ./ralsei --config ~/.config/ralsei/config.jsonc
 ```
 
-The config path can also be set with `RALSEI_CONFIG`. Default: `~/.config/ralsei/config.jsonc`.
+The config path can also be set with `RALSEI_CONFIG`. Default: `~/.config/ralsei/config.jsonc`. See `config.example.jsonc` for a starting point.
 
 ## Config
 
@@ -44,11 +45,17 @@ The config path can also be set with `RALSEI_CONFIG`. Default: `~/.config/ralsei
   "ollama_host": "http://127.0.0.1:11434",
   "ai_prompt": "Your name is Ralsei, a kind fluffy goat boy from Deltarune. you act friendly and gentle like a cute fluffy prince and try not to use emojis and try to type short simple answers 10 words if possible say everything from your perspective like you are human.",
   "ai_temperature": 0.8,
-  "ai_think": false
+  "ai_think": false,
+  "random_channels": [
+    123456789012345678
+  ],
+  "random_chance": 0.02
 }
 ```
 
 `ai_think` enables Ollama thinking output for models that support it. Models without thinking support are retried automatically without it.
+
+`random_channels` holds channel IDs where the bot may answer random messages without being mentioned. `random_chance` is the chance per message (default `0.02`, i.e. 2%). Enable Discord developer mode and use "Copy Channel ID" to get the IDs.
 
 ## Systemd user service
 
