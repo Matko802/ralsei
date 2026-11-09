@@ -344,6 +344,7 @@ func (a *App) ready(s *discordgo.Session, e *discordgo.Ready) {
 					Choices: []*discordgo.ApplicationCommandOptionChoice{
 						{Name: "join", Value: "join"},
 						{Name: "leave", Value: "leave"},
+						{Name: "terminalmode", Value: "terminalmode"},
 					},
 				},
 			},
@@ -1900,6 +1901,12 @@ func (a *App) presentTerminal(channelID, command, output string, exit int) {
 	if a.term == nil {
 		return
 	}
+	a.voiceMu.Lock()
+	vcCh := a.voiceCh
+	a.voiceMu.Unlock()
+	if vcCh != "" {
+		channelID = vcCh
+	}
 	if exit != 0 {
 		output += fmt.Sprintf("\n[exit %d]", exit)
 	}
@@ -1963,6 +1970,7 @@ func (a *App) runTerminalPrompt(channelID string, userID uint64, text string) {
 	a.presentTerminal(channelID, cmd, "(running...)", 0)
 	out, code := a.runVMCommand(cmd)
 	a.presentTerminal(channelID, cmd, out, code)
+	a.speak(out)
 }
 
 func (a *App) setTerminalMode(channelID string, on bool) string {
@@ -2194,6 +2202,35 @@ func (a *App) handleVcCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 	vs, err := s.State.VoiceState(i.GuildID, caller)
 	if err != nil || vs.ChannelID == "" {
 		respondPrivate(s, i, "join a voice channel first, then run /vc join.")
+		return
+	}
+	if action == "terminalmode" {
+		uid, err := u64(caller)
+		if err != nil || !a.isElevated(uid) {
+			respondPrivate(s, i, "you are not allowed to share the terminal.")
+			return
+		}
+		a.termMu.Lock()
+		a.termMode[i.ChannelID] = true
+		a.termMu.Unlock()
+		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+		}); err != nil {
+			log.Printf("vc defer: %v", err)
+			return
+		}
+		go func() {
+			if err := a.joinVoice(i.GuildID, vs.ChannelID); err != nil {
+				msg := "could not join voice: " + err.Error()
+				_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
+				return
+			}
+			a.presentTerminal(vs.ChannelID, "", "Terminal mode is on.\nMessages in this text channel become commands in the artix VM. I will share the screen here.", 0)
+			a.speak("Terminal mode is ready. I will share my screen here.")
+			msg := "terminal mode is on, sharing the terminal in the voice channel chat."
+			_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
+		}()
 		return
 	}
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

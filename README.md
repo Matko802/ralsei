@@ -22,6 +22,7 @@ Derived from the AI behavior of [Artixy](https://github.com/Matko802/artixy): pe
 - `/forget [all]` for owner, admins and managers — clears the current channel's AI memory, or every channel with `all`
 - `/event on|off` — anyone can toggle mini events
 - `/act` — anyone, opens a Deltarune battle window: FIGHT is a timing minigame (fast STRIKE = more damage, 2-6% TP), ACT builds Mercy, MERCY spares at 100% Mercy or tired (HP <= 50%), FLEE deletes the message, and a CONTINUE button appears when Ralsei is down
+- `/vc terminalmode` — owner/admins/managers: joins voice, enables terminal mode for the channel, and shares the live terminal image in the **voice channel chat** while narrating output with TTS. (Discord's bot API cannot send real video screen share; only self-bots can, which is against ToS, so this is the closest safe equivalent.)
 - `/terminalmode on|off` — owner/admins/managers: enables AI terminal mode for the channel. Messages are turned into bash commands by the AI, executed inside the existing `artix` VM through the QEMU guest agent, and shown as a live terminal screenshot (one message, updated in place)
 - `/term <command>` — owner/admins/managers: run a command directly in the VM and show the terminal screenshot
 - `/tts on|off` for owner, admins and managers — speaks AI replies in the voice channel using the local Piper voice (en_US-lessac medium); parenthesised actions are skipped, only spoken lines are read
